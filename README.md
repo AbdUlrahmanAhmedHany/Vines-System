@@ -18,19 +18,18 @@ wrangler.jsonc             Cloudflare Worker and static asset configuration
 pyproject.toml              Python Worker dependencies
 shared-app/                 Supabase schema, migrations, and planning notes
 run.py                      Local Flask entry point
-requirements.txt            Python dependencies
 package.json                TypeScript build scripts and dependency
 tsconfig.json               TypeScript compiler settings
 ```
 
 ## Run locally
 
-You need Python 3.10+ and Node.js/npm.
+You need Python 3.13+ and Node.js/npm.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -e .
 npm install
 npm run build
 python run.py
