@@ -8,7 +8,76 @@
     <link rel="stylesheet" href="/static/css/styles.css" />
   </head>
   <body>
-    <div class="shell">
+    <main class="auth-screen" id="authGate">
+      <section class="auth-card">
+        <div class="brand auth-brand">
+          <div class="brand-mark" aria-hidden="true">✳</div>
+          <div class="brand-name">
+            Vines Club Hub<small>University media club</small>
+          </div>
+        </div>
+        <p class="eyebrow">Members workspace</p>
+        <h1 id="authTitle">Welcome back</h1>
+        <p class="auth-copy" id="authCopy">
+          Sign in with the email and password from your Vines invitation.
+        </p>
+        <form id="loginForm" class="auth-form">
+          <label for="loginEmail">Email</label>
+          <input
+            id="loginEmail"
+            name="email"
+            type="email"
+            autocomplete="email"
+            required
+          />
+          <label for="loginPassword">Password</label>
+          <input
+            id="loginPassword"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+          <button class="btn lime auth-submit" type="submit">Sign in</button>
+          <button class="auth-link" id="forgotPassword" type="button">
+            Forgot password?
+          </button>
+        </form>
+        <form id="setPasswordForm" class="auth-form hidden">
+          <label for="newPassword">Create your password</label>
+          <input
+            id="newPassword"
+            name="password"
+            type="password"
+            autocomplete="new-password"
+            minlength="8"
+            required
+          />
+          <label for="confirmPassword">Confirm password</label>
+          <input
+            id="confirmPassword"
+            name="confirmPassword"
+            type="password"
+            autocomplete="new-password"
+            minlength="8"
+            required
+          />
+          <button class="btn lime auth-submit" type="submit">
+            Set password
+          </button>
+        </form>
+        <div
+          class="auth-message"
+          id="authMessage"
+          role="status"
+          aria-live="polite"
+        ></div>
+        <p class="auth-foot">
+          No sign-up page. Ask your Vines system admin for an invitation.
+        </p>
+      </section>
+    </main>
+    <div class="shell hidden" id="appShell">
       <aside class="side">
         <div class="brand">
           <div class="brand-mark">
@@ -38,8 +107,14 @@
           ><button data-view="members">
             <span class="nav-ico">♙</span>Members</button
           ><button data-view="tasks"><span class="nav-ico">✓</span>Tasks</button
-          ><button data-view="structure">
-            <span class="nav-ico">⌘</span>Departments & projects
+          ><button data-view="calendar">
+            <span class="nav-ico">◷</span>Calendar</button
+          ><button data-view="administration" id="adminNav">
+            <span class="nav-ico">⚙</span>Administration</button
+          ><button data-view="departments">
+            <span class="nav-ico">🌱</span>Departments</button
+          ><button data-view="projects">
+            <span class="nav-ico">🎬</span>Projects
           </button>
         </nav>
         <div class="side-bottom">
@@ -64,19 +139,10 @@
             </div>
           </div>
           <div class="controls">
-            <span class="view-as">Previewing access</span
-            ><select class="select" id="roleSelect" aria-label="Preview access">
-              <option>System admin access</option>
-              <option>Department Head</option>
-              <option>Project Head</option>
-              <option>President</option>
-              <option>Vice President</option>
-              <option>Member</option></select
-            ><select
-              class="select hidden"
-              id="personSelect"
-              aria-label="Preview person"
-            ></select>
+            <span class="view-as" id="signedInAs"></span>
+            <button class="btn ghost small" id="signOutBtn" type="button">
+              Sign out
+            </button>
           </div>
         </header>
         <section class="view active" id="home">
@@ -198,6 +264,72 @@
           </div>
           <div class="data-table" id="taskList"></div>
         </section>
+        <section class="view" id="calendar">
+          <div class="section-title">
+            <div>
+              <h2>Deadlines, in view.</h2>
+              <p>
+                Only your visible tasks appear. Export the deadlines to Google
+                or Apple Calendar.
+              </p>
+            </div>
+            <div class="controls">
+              <button class="btn ghost" id="exportCalendar">
+                Export calendar (.ics)
+              </button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">
+                <span class="card-icon">◷</span>
+                <h3 id="calendarMonthLabel"></h3>
+              </div>
+              <div class="controls">
+                <button
+                  class="btn ghost small"
+                  id="calendarPrev"
+                  aria-label="Previous month"
+                >
+                  ←</button
+                ><button
+                  class="btn ghost small"
+                  id="calendarNext"
+                  aria-label="Next month"
+                >
+                  →
+                </button>
+              </div>
+            </div>
+            <div class="structure-list spaced-12" id="calendarList"></div>
+          </div>
+        </section>
+        <section class="view" id="administration">
+          <div class="section-title">
+            <div>
+              <h2>System administration.</h2>
+              <p>Restricted to the person with system admin permission.</p>
+            </div>
+          </div>
+          <div class="stat-grid" id="adminStats"></div>
+          <div class="card spaced-14">
+            <div class="card-head">
+              <div class="card-title">
+                <span class="card-icon mint">✉</span>
+                <h3>Pending invitations</h3>
+              </div>
+              <button class="btn lime" id="adminAddMember">
+                ＋ Add member
+              </button>
+            </div>
+            <div class="structure-list spaced-12" id="pendingInvitations"></div>
+          </div>
+          <div class="note spaced-14">
+            Create member profiles from Members. Profiles are saved first, then
+            Supabase sends each invitation. Use a configured email provider for
+            larger batches.
+          </div>
+        </section>
         <section class="view" id="structure">
           <div class="section-title">
             <div>
@@ -209,7 +341,7 @@
             </div>
           </div>
           <div class="section-card">
-            <div class="card">
+            <div class="card" id="departmentCard">
               <div class="card-head">
                 <div class="card-title">
                   <span class="card-icon mint">🌱</span>
@@ -238,7 +370,7 @@
               </div>
               <div class="structure-list spaced-15" id="deptList"></div>
             </div>
-            <div class="card">
+            <div class="card" id="projectCard">
               <div class="card-head">
                 <div class="card-title">
                   <span class="card-icon coral">🎬</span>
@@ -303,9 +435,9 @@
         <div class="system-note">
           <span>✳</span
           ><span
-            ><b>Prototype preview:</b> saved in this browser only. A hosted
-            version with real member accounts and shared updates will need an
-            app backend.</span
+            ><b>Setup status:</b> Supabase sign-in, shared edits and member
+            invitations are implemented. Finish hosting settings and verify
+            database permissions before inviting the club.</span
           >
         </div>
       </main>

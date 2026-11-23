@@ -50,22 +50,24 @@ The repository includes a Cloudflare Python Worker adapter for the Flask preview
 - Preview command: `uv run pywrangler preview`
 - Root directory: leave blank
 
-For local Worker development, install [uv](https://docs.astral.sh/uv/) and Node.js, then run `npm install` and `uv run pywrangler dev`. The current Worker hosts the same local-storage preview only; it does not provide member authentication or shared database storage.
+For local Worker development, install [uv](https://docs.astral.sh/uv/) and Node.js, then run `npm install` and `uv run pywrangler dev`. The Worker serves the Flask app and its server-side Supabase invitation routes.
 
 ## Current capabilities and limits
 
-- The dashboard, member, task, department, and project screens are a local preview.
-- Preview data is stored in that browser's local storage; it is not shared between members or browsers.
-- The role picker previews interface states. It is not a real authentication or permission boundary.
-- Supabase SQL files describe the intended database and row-level access rules. Flask routes do not yet read or write to Supabase.
-- Password login, Google sign-in, invitation acceptance, server-side member provisioning, and live email invitations are not implemented.
+- Email/password sign-in, password reset, invitation password setup, and profile matching use Supabase Auth. There is no public sign-up option.
+- The app reads and writes member, department, project, assignment, task, and progress-update data through Supabase. Database Row Level Security remains the authority for each operation.
+- New member profiles are created by the system admin and an invitation is sent from the server. After the invited member chooses a password, the server activates the matching pending profile. There is no public sign-up option.
+- Server-side invitation and activation routes require a protected `SUPABASE_SECRET_KEY`; it is never returned to the browser.
+- The Calendar view shows only tasks the current account may see and exports an `.ics` calendar file for import into Google Calendar or Apple Calendar. It is a manual export, not an automatic two-way sync.
+- The database permissions and invitation flow still need to be checked against the connected Supabase project before the club uses the site.
+- Google sign-in is not configured.
 - The member import preview accepts CSV files (including CSV exported from Excel); it does not import `.xlsx` workbooks directly.
 
-Do not use this preview as a live member system until authentication, database reads/writes, and server-enforced permissions are connected.
+Do not invite the club or use real member data until the required Supabase migrations and Worker secrets are configured and the role permissions have been verified.
 
 ## Environment and secrets
 
-Copy `.env.example` to `.env` only for local development. `.env` is ignored by Git. Never commit Supabase secret keys, SMTP credentials, or other private keys. Browser configuration may contain the Supabase URL and publishable key; the Supabase secret key belongs only in a trusted server or encrypted hosting secret.
+For local development, set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and (for invitations) `SUPABASE_SECRET_KEY` in the environment. Cloudflare Worker variables supply the public settings through `/api/config`; add the secret key only as a protected Worker secret. Never commit Supabase secret keys, SMTP credentials, or other private keys.
 
 ## Supabase reference files
 

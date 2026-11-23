@@ -1,4 +1,8 @@
-const KEY = "vines-club-hub-v1";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+
+const KEY_PREFIX = "vines-club-hub-v1:";
+let KEY = "";
+const SHARED_WRITES_ENABLED = true;
 const starter = {
   departments: [
     {
@@ -124,13 +128,709 @@ function load() {
     return structuredClone(starter);
   }
 }
-let db = load(),
-  role = "System admin access",
-  selectedPerson = "";
+let db: any = structuredClone(starter),
+  role = "",
+  selectedPerson = "",
+  structureMode = "structure",
+  calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+  supabase: SupabaseClient | null = null,
+  authUser: any = null,
+  authProfile: any = null,
+  currentPositions: string[] = [],
+  positionsCatalog: any[] = [],
+  sessionReady = false,
+  syncedDb: any = null,
+  saveQueue: Promise<void> = Promise.resolve(),
+  passwordSetupFlow = false,
+  inviteSetupFlow = false,
+  openingSessionFor = "";
 const $ = (id: string): any => document.getElementById(id) as any;
-function save() {
-  localStorage.setItem(KEY, JSON.stringify(db));
+
+function authNotice(message = "", isError = false) {
+  const notice = $("authMessage");
+  notice.textContent = message;
+  notice.classList.toggle("error", isError);
+}
+
+function showAuthGate(message = "", isError = false) {
+  $("appShell").classList.add("hidden");
+  $("authGate").classList.remove("hidden");
+  $("loginForm").classList.remove("hidden");
+  $("setPasswordForm").classList.add("hidden");
+  $("authTitle").textContent = "Welcome back";
+  $("authCopy").textContent =
+    "Sign in with the email and password from your Vines invitation.";
+  authNotice(message, isError);
+}
+
+async function openWorkspace(user: any) {
+  if (!supabase || !user?.email) return;
+  if (passwordSetupFlow) {
+    $("appShell").classList.add("hidden");
+    $("authGate").classList.remove("hidden");
+    $("loginForm").classList.add("hidden");
+    $("setPasswordForm").classList.remove("hidden");
+    return;
+  }
+  if (sessionReady && authUser?.id === user.id) return;
+  if (openingSessionFor === user.id) return;
+  openingSessionFor = user.id;
+  const { data: profile, error } = await supabase
+    .from("members")
+    .select("id,name,email,club_role,is_club_admin,status")
+    .ilike("email", user.email)
+    .maybeSingle();
+  if (error || !profile) {
+    openingSessionFor = "";
+    await supabase.auth.signOut();
+    showAuthGate(
+      "This email is not linked to a Vines member profile. Ask the system admin for help.",
+      true,
+    );
+    return;
+  }
+  if (profile.status !== "Active") {
+    openingSessionFor = "";
+    await supabase.auth.signOut();
+    showAuthGate(
+      "Your Vines invitation is not active yet. Ask the system admin to check your profile.",
+      true,
+    );
+    return;
+  }
+
+  authUser = user;
+  authProfile = profile;
+  const positionsResult = await supabase
+    .from("member_positions")
+    .select("position_id,department_id,project_id")
+    .eq("member_id", profile.id);
+  const catalogResult = await supabase.from("positions").select("id,name");
+  if (positionsResult.error || catalogResult.error) {
+    openingSessionFor = "";
+    await supabase.auth.signOut();
+    showAuthGate(
+      "Your profile is linked, but role data is not ready. Ask the system admin to check the matrix migration.",
+      true,
+    );
+    return;
+  }
+  const positionNames = new Map(
+    catalogResult.data.map((item) => [item.id, item.name]),
+  );
+  currentPositions = positionsResult.data
+    .map((item) => positionNames.get(item.position_id))
+    .filter(Boolean) as string[];
+  positionsCatalog = catalogResult.data || [];
+  role = profile.is_club_admin
+    ? "System admin access"
+    : currentPositions.includes("President")
+      ? "President"
+      : currentPositions.includes("Vice President")
+        ? "Vice President"
+        : currentPositions.includes("Department Head")
+          ? "Department Head"
+          : currentPositions.includes("Project Head")
+            ? "Project Head"
+            : profile.club_role;
+  selectedPerson = profile.id;
+  KEY = `${KEY_PREFIX}${String(profile.email).toLowerCase()}`;
+  try {
+    db = await loadSharedWorkspace();
+  } catch (loadError) {
+    openingSessionFor = "";
+    await supabase.auth.signOut();
+    showAuthGate(
+      loadError instanceof Error
+        ? loadError.message
+        : "Could not load the shared workspace.",
+      true,
+    );
+    return;
+  }
+  sessionReady = true;
+  syncedDb = structuredClone(db);
+  openingSessionFor = "";
+  $("signedInAs").textContent = profile.name || profile.email;
+  $("authGate").classList.add("hidden");
+  $("appShell").classList.remove("hidden");
   render();
+}
+
+async function initializeSupabase() {
+  try {
+    const configResponse = await fetch("/api/config", { cache: "no-store" });
+    const config = await configResponse.json();
+    if (!config.supabaseUrl || !config.supabasePublishableKey)
+      throw new Error(
+        "Supabase settings are not configured for this site yet.",
+      );
+
+    supabase = createClient(config.supabaseUrl, config.supabasePublishableKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+    const flow =
+      new URLSearchParams(window.location.search).get("flow") ||
+      new URLSearchParams(window.location.hash.slice(1)).get("type") ||
+      "";
+    inviteSetupFlow = flow === "invite";
+    passwordSetupFlow = ["invite", "recovery"].includes(flow);
+    if (passwordSetupFlow) {
+      $("loginForm").classList.add("hidden");
+      $("setPasswordForm").classList.remove("hidden");
+      $("authTitle").textContent = "Choose a password";
+      $("authCopy").textContent =
+        "Create a password to finish setting up your Vines account.";
+    }
+
+    const { data } = await supabase.auth.getSession();
+    if (data.session) await openWorkspace(data.session.user);
+    supabase.auth.onAuthStateChange((_event, session) => {
+      window.setTimeout(() => {
+        if (session) void openWorkspace(session.user);
+        else if (sessionReady) {
+          sessionReady = false;
+          authUser = null;
+          authProfile = null;
+          currentPositions = [];
+          openingSessionFor = "";
+          role = "";
+          selectedPerson = "";
+          showAuthGate("You have signed out.");
+        }
+      }, 0);
+    });
+  } catch (error) {
+    showAuthGate(
+      error instanceof Error ? error.message : "Could not connect to Supabase.",
+      true,
+    );
+  }
+}
+
+async function loadSharedWorkspace() {
+  if (!supabase) throw new Error("Supabase is not connected.");
+  const results = await Promise.all([
+    supabase
+      .from("members")
+      .select("id,name,email,club_role,department_id,is_club_admin,status"),
+    supabase.from("departments").select("id,name,description,head_member_id"),
+    supabase
+      .from("projects")
+      .select("id,name,description,project_lead_id,status"),
+    supabase.from("member_departments").select("member_id,department_id"),
+    supabase
+      .from("project_assignments")
+      .select("member_id,project_id,status,role_on_project"),
+    supabase
+      .from("tasks")
+      .select(
+        "id,title,description,task_type,project_id,department_id,assignee_id,assigned_by,status,priority,due_at,progress_update",
+      ),
+    supabase.from("task_updates").select("task_id,author_id,note,created_at"),
+    supabase
+      .from("member_positions")
+      .select("member_id,position_id,department_id,project_id"),
+    supabase.from("positions").select("id,name"),
+  ]);
+  const failed = results.find((result) => result.error);
+  if (failed?.error)
+    throw new Error(`Could not load shared club data: ${failed.error.message}`);
+  const [
+    members,
+    departments,
+    projects,
+    memberDepartments,
+    assignments,
+    tasks,
+    updates,
+    memberPositions,
+    positions,
+  ] = results.map((result) => result.data || []) as any[][];
+  const departmentNames = new Map<string, string>(
+    departments.map((item: any) => [item.id, item.name]),
+  );
+  const projectNames = new Map<string, string>(
+    projects.map((item: any) => [item.id, item.name]),
+  );
+  const positionNames = new Map<string, string>(
+    positions.map((item: any) => [item.id, item.name]),
+  );
+  const assignmentsByMember = new Map<string, string[]>();
+  assignments
+    .filter((item) => item.status === "Active")
+    .forEach((item) => {
+      const list = assignmentsByMember.get(item.member_id) || [];
+      const name = projectNames.get(item.project_id);
+      if (name && !list.includes(name)) list.push(name);
+      assignmentsByMember.set(item.member_id, list);
+    });
+  const departmentsByMember = new Map<string, string[]>();
+  memberDepartments.forEach((item) => {
+    const list = departmentsByMember.get(item.member_id) || [];
+    const name = departmentNames.get(item.department_id);
+    if (name && !list.includes(name)) list.push(name);
+    departmentsByMember.set(item.member_id, list);
+  });
+  const rolesByMember = new Map<string, string[]>();
+  memberPositions.forEach((item) => {
+    const list = rolesByMember.get(item.member_id) || [];
+    const name = positionNames.get(item.position_id);
+    if (name && !list.includes(name)) list.push(name);
+    rolesByMember.set(item.member_id, list);
+  });
+  const departmentHeads = new Map<string, string>();
+  const projectHeads = new Map<string, string>();
+  const headScopeByMember = new Map<string, string>();
+  memberPositions.forEach((item: any) => {
+    const position = positionNames.get(item.position_id);
+    if (position === "Department Head" && item.department_id) {
+      departmentHeads.set(item.department_id, item.member_id);
+      headScopeByMember.set(
+        item.member_id,
+        departmentNames.get(item.department_id) || "",
+      );
+    }
+    if (position === "Project Head" && item.project_id) {
+      projectHeads.set(item.project_id, item.member_id);
+      headScopeByMember.set(
+        item.member_id,
+        projectNames.get(item.project_id) || "",
+      );
+    }
+  });
+  const updatesByTask = new Map<string, any[]>();
+  updates.forEach((item) => {
+    const list = updatesByTask.get(item.task_id) || [];
+    list.push({ text: item.note, by: item.author_id, at: item.created_at });
+    updatesByTask.set(item.task_id, list);
+  });
+  return {
+    departments: departments.map((item) => ({
+      id: item.id,
+      name: item.name,
+      description: item.description || "",
+      head: departmentHeads.get(item.id) || "",
+    })),
+    projects: projects.map((item) => ({
+      id: item.id,
+      name: item.name,
+      description: item.description || "",
+      lead: projectHeads.get(item.id) || "",
+      status: item.status,
+    })),
+    members: members.map((item) => {
+      const memberDeptList = departmentsByMember.get(item.id) || [];
+      const legacyDepartment = departmentNames.get(item.department_id);
+      if (legacyDepartment && !memberDeptList.includes(legacyDepartment))
+        memberDeptList.push(legacyDepartment);
+      return {
+        id: item.id,
+        name: item.name,
+        email: item.email,
+        clubRole:
+          item.club_role === "Department head"
+            ? "Department Head"
+            : item.club_role === "Project lead" || item.club_role === "Head"
+              ? "Project Head"
+              : item.club_role,
+        extraRole: ["President", "Vice President"].includes(item.club_role)
+          ? (rolesByMember.get(item.id) || []).find((name) =>
+              ["Department Head", "Project Head"].includes(name),
+            ) || ""
+          : "",
+        headScope: headScopeByMember.get(item.id) || "",
+        isClubAdmin: item.is_club_admin,
+        status: item.status,
+        departments: memberDeptList,
+        department: memberDeptList[0] || "",
+        projects: assignmentsByMember.get(item.id) || [],
+        positionNames: rolesByMember.get(item.id) || [],
+      };
+    }),
+    tasks: tasks.map((item) => ({
+      id: item.id,
+      title: item.title,
+      description: item.description || "",
+      project: projectNames.get(item.project_id) || "",
+      department: departmentNames.get(item.department_id) || "",
+      assignee: item.assignee_id,
+      assigner: item.assigned_by,
+      status: item.status,
+      priority: item.priority,
+      due: item.due_at ? String(item.due_at).slice(0, 10) : "",
+      update: item.progress_update || "",
+      updates: updatesByTask.get(item.id) || [],
+    })),
+  };
+}
+
+$("loginForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!supabase) return authNotice("Supabase is not configured yet.", true);
+  const form = new FormData(event.currentTarget as HTMLFormElement);
+  const email = String(form.get("email") || "").trim();
+  const password = String(form.get("password") || "");
+  authNotice("Signing in…");
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) authNotice("That email and password could not sign in.", true);
+});
+
+$("forgotPassword").addEventListener("click", async () => {
+  if (!supabase) return authNotice("Supabase is not configured yet.", true);
+  const email = String($("loginEmail").value || "").trim();
+  if (!email) return authNotice("Enter your email first.", true);
+  const redirectTo = `${window.location.origin}/?flow=recovery`;
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo,
+  });
+  authNotice(
+    error
+      ? "Could not send a reset email. Check Auth email delivery settings."
+      : "If that account is registered, a password reset email is on its way.",
+    Boolean(error),
+  );
+});
+
+$("setPasswordForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!supabase) return authNotice("Supabase is not configured yet.", true);
+  const form = new FormData(event.currentTarget as HTMLFormElement);
+  const password = String(form.get("password") || "");
+  const confirmation = String(form.get("confirmPassword") || "");
+  if (password !== confirmation)
+    return authNotice("The passwords do not match.", true);
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error)
+    return authNotice(
+      "Could not set the password. Try the invite link again.",
+      true,
+    );
+  if (inviteSetupFlow) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activation = await fetch("/api/activate-invited-member", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + (sessionData.session?.access_token || ""),
+      },
+    });
+    if (!activation.ok) {
+      const result = await activation.json().catch(() => ({}));
+      return authNotice(
+        result.error ||
+          "Password saved, but your profile could not be activated. Contact the system admin.",
+        true,
+      );
+    }
+  }
+  passwordSetupFlow = false;
+  inviteSetupFlow = false;
+  window.history.replaceState({}, "", window.location.pathname);
+  const { data } = await supabase.auth.getUser();
+  if (data.user) await openWorkspace(data.user);
+});
+
+$("signOutBtn").addEventListener("click", async () => {
+  if (supabase) await supabase.auth.signOut();
+});
+
+function same(a: any, b: any) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function byName(items: any[], name: string) {
+  return items.find((item) => item.name === name)?.id || null;
+}
+
+async function writeTable(table: string, rows: any[], onConflict = "") {
+  if (!rows.length) return;
+  const { error } = await supabase!
+    .from(table)
+    .upsert(rows, onConflict ? { onConflict } : undefined);
+  if (error) throw new Error(`${table}: ${error.message}`);
+}
+
+async function deleteRows(table: string, filters: Record<string, string>) {
+  let query: any = supabase!.from(table).delete();
+  Object.entries(filters).forEach(([key, value]) => {
+    query = query.eq(key, value);
+  });
+  const { error } = await query;
+  if (error) throw new Error(`${table}: ${error.message}`);
+}
+
+async function persistChanges(before: any, after: any) {
+  if (!supabase || !authUser || !authProfile)
+    throw new Error("Your sign-in session has expired. Please sign in again.");
+
+  // The member record itself is admin-only. Keep position and assignment data
+  // in their own relations so department/project heads can only change scope.
+  const changedMembers = after.members.filter((member: any) => {
+    const old = before.members.find((row: any) => row.id === member.id);
+    return (
+      !old ||
+      ["name", "email", "clubRole", "isClubAdmin", "status"].some(
+        (field) => old[field] !== member[field],
+      )
+    );
+  });
+  if (changedMembers.length && !isAdmin())
+    throw new Error(
+      "Only the system admin can create or edit member profiles.",
+    );
+  if (changedMembers.length) {
+    await writeTable(
+      "members",
+      changedMembers.map((member: any) => ({
+        id: member.id,
+        name: member.name,
+        email: member.email.trim().toLowerCase(),
+        club_role: ["President", "Vice President"].includes(member.clubRole)
+          ? member.clubRole
+          : member.clubRole === "Department Head"
+            ? "Department head"
+            : member.clubRole === "Project Head"
+              ? "Project lead"
+              : "Member",
+        department_id: null,
+        is_club_admin: Boolean(member.isClubAdmin),
+        status: member.status || "Pending invitation",
+      })),
+    );
+  }
+
+  const changedDepartments = after.departments.filter((item: any) => {
+    const old = before.departments.find((row: any) => row.id === item.id);
+    return !old || !same(old, item);
+  });
+  if (changedDepartments.length) {
+    if (!isAdmin())
+      throw new Error("Only the system admin can edit department records.");
+    await writeTable(
+      "departments",
+      changedDepartments.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description || "",
+        head_member_id: item.head || null,
+      })),
+      "name",
+    );
+  }
+
+  const changedProjects = after.projects.filter((item: any) => {
+    const old = before.projects.find((row: any) => row.id === item.id);
+    return !old || !same(old, item);
+  });
+  if (changedProjects.length) {
+    if (!isAdmin())
+      throw new Error("Only the system admin can edit project records.");
+    await writeTable(
+      "projects",
+      changedProjects.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description || "",
+        project_lead_id: item.lead || null,
+        status: item.status || "Planning",
+      })),
+      "name",
+    );
+  }
+
+  const changedAssignments = after.members.filter((member: any) => {
+    const old = before.members.find((row: any) => row.id === member.id);
+    return (
+      !old ||
+      !same(old.departments || [], member.departments || []) ||
+      !same(old.projects || [], member.projects || [])
+    );
+  });
+  for (const member of changedAssignments) {
+    const old = before.members.find((row: any) => row.id === member.id);
+    const oldDepartments: string[] = old?.departments || [];
+    const newDepartments: string[] = member.departments || [];
+    for (const name of oldDepartments.filter(
+      (name) => !newDepartments.includes(name),
+    )) {
+      const departmentId = byName(after.departments, name);
+      if (departmentId)
+        await deleteRows("member_departments", {
+          member_id: member.id,
+          department_id: departmentId,
+        });
+    }
+    const departmentRows = newDepartments
+      .filter((name) => !oldDepartments.includes(name))
+      .map((name) => ({
+        member_id: member.id,
+        department_id: byName(after.departments, name),
+        assigned_by: authProfile.id,
+      }))
+      .filter((row: any) => row.department_id);
+    await writeTable("member_departments", departmentRows);
+
+    const oldProjects: string[] = old?.projects || [];
+    const newProjects: string[] = member.projects || [];
+    for (const name of oldProjects.filter(
+      (name) => !newProjects.includes(name),
+    )) {
+      const projectId = byName(after.projects, name);
+      if (projectId)
+        await deleteRows("project_assignments", {
+          member_id: member.id,
+          project_id: projectId,
+        });
+    }
+    const projectRows = newProjects
+      .filter((name) => !oldProjects.includes(name))
+      .map((name) => ({
+        member_id: member.id,
+        project_id: byName(after.projects, name),
+        allocated_by: authProfile.id,
+        status: "Active",
+        role_on_project: "Core",
+      }))
+      .filter((row: any) => row.project_id);
+    await writeTable(
+      "project_assignments",
+      projectRows,
+      "member_id,project_id",
+    );
+  }
+
+  if (isAdmin()) {
+    const changedPositions = after.members.filter((member: any) => {
+      const old = before.members.find((row: any) => row.id === member.id);
+      return (
+        !old ||
+        old.clubRole !== member.clubRole ||
+        old.extraRole !== member.extraRole ||
+        old.headScope !== member.headScope
+      );
+    });
+    for (const member of changedPositions) {
+      const { error: deleteError } = await supabase
+        .from("member_positions")
+        .delete()
+        .eq("member_id", member.id);
+      if (deleteError)
+        throw new Error(`member_positions: ${deleteError.message}`);
+      const names = [member.clubRole, member.extraRole].filter(Boolean);
+      const positionRows = names
+        .map((name: string) => {
+          const scopeId = byName(
+            name === "Department Head" ? after.departments : after.projects,
+            member.headScope || "",
+          );
+          return {
+            member_id: member.id,
+            position_id: byName(positionsCatalog, name),
+            department_id: name === "Department Head" ? scopeId : null,
+            project_id: name === "Project Head" ? scopeId : null,
+            assigned_by: authProfile.id,
+          };
+        })
+        .filter((row: any) => row.position_id);
+      await writeTable("member_positions", positionRows);
+    }
+  }
+
+  const changedTasks = after.tasks.filter((task: any) => {
+    const old = before.tasks.find((row: any) => row.id === task.id);
+    return !old || !same(old, task);
+  });
+  if (changedTasks.length) {
+    for (const task of changedTasks) {
+      const old = before.tasks.find((row: any) => row.id === task.id);
+      const row: any = {
+        id: task.id,
+        title: task.title,
+        description: task.description || "",
+        task_type: task.project
+          ? "Project task"
+          : task.department
+            ? "Department task"
+            : "Club-wide",
+        project_id: byName(after.projects, task.project || ""),
+        department_id: byName(after.departments, task.department || ""),
+        assignee_id: task.assignee,
+        assigned_by: task.assigner || authProfile.id,
+        status: task.status || "To do",
+        priority: task.priority || "Medium",
+        due_at: task.due ? `${task.due}T23:59:00` : null,
+        progress_update: task.update || "",
+      };
+      if (!old) await writeTable("tasks", [row]);
+      else {
+        const allowed: any = {};
+        if (old.status !== task.status) allowed.status = task.status;
+        if (old.update !== task.update)
+          allowed.progress_update = task.update || "";
+        if (Object.keys(allowed).length) {
+          const { error } = await supabase
+            .from("tasks")
+            .update(allowed)
+            .eq("id", task.id);
+          if (error) throw new Error(`tasks: ${error.message}`);
+        }
+      }
+      const oldUpdates = old?.updates || [];
+      const newUpdates = task.updates || [];
+      const additions = newUpdates
+        .slice(oldUpdates.length)
+        .map((update: any) => ({
+          task_id: task.id,
+          author_id: update.by || authProfile.id,
+          note: update.text,
+        }));
+      await writeTable("task_updates", additions);
+    }
+  }
+}
+
+function save(): Promise<boolean> {
+  render();
+  if (!SHARED_WRITES_ENABLED || !supabase || !syncedDb)
+    return Promise.resolve(false);
+  const next = structuredClone(db);
+  let succeeded = true;
+  saveQueue = saveQueue
+    .then(async () => {
+      await persistChanges(syncedDb, next);
+      syncedDb = next;
+    })
+    .catch(async (error) => {
+      succeeded = false;
+      alert(error instanceof Error ? error.message : "Could not save changes.");
+      try {
+        db = await loadSharedWorkspace();
+        syncedDb = structuredClone(db);
+        render();
+      } catch {
+        await supabase?.auth.signOut();
+      }
+    });
+  return saveQueue.then(() => succeeded);
+}
+
+async function sendInvitation(email: string) {
+  const { data } = await supabase!.auth.getSession();
+  const response = await fetch("/api/invitations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + (data.session?.access_token || ""),
+    },
+    body: JSON.stringify({ email }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw new Error(result.error || "Could not send the invitation.");
 }
 function esc(x = "") {
   return String(x).replace(
@@ -152,6 +852,8 @@ function deptsOf(m) {
 }
 function memberRoles(m) {
   let labels = [];
+  if (m.positionNames?.length)
+    labels.push(...m.positionNames.filter((position) => position !== "Member"));
   if (["President", "Vice President"].includes(m.clubRole))
     labels.push(m.clubRole);
   if (m.extraRole) labels.push(m.extraRole);
@@ -169,7 +871,12 @@ function isAdmin() {
   return role === "System admin access";
 }
 function isExecutive() {
-  return ["President", "Vice President"].includes(role);
+  return (
+    ["President", "Vice President"].includes(role) ||
+    currentPositions.some((position) =>
+      ["President", "Vice President"].includes(position),
+    )
+  );
 }
 function scope() {
   return selectedPerson || db.members[0]?.id || "";
@@ -217,44 +924,17 @@ function isHeadRole() {
     role === "Department Head" ||
     role === "Project Head" ||
     role === "Department head" ||
-    role === "Project lead"
+    role === "Project lead" ||
+    currentPositions.some((position) =>
+      ["Department Head", "Project Head"].includes(position),
+    )
   );
 }
 function allowedMembers() {
-  if (isAdmin() || isExecutive()) return db.members;
-  if (isHeadRole()) {
-    let ds = db.departments
-        .filter((d) => d.head === scope())
-        .map((d) => d.name),
-      ps = db.projects.filter((p) => p.lead === scope()).map((p) => p.name);
-    return db.members.filter(
-      (m) =>
-        deptsOf(m).some((d) => ds.includes(d)) ||
-        m.projects.some((p) => ps.includes(p)),
-    );
-  }
-  return db.members.filter((m) => m.id === scope());
+  return db.members;
 }
 function allowedTasks() {
-  let ids = allowedMembers().map((m) => m.id);
-  if (isAdmin() || isExecutive()) return db.tasks;
-  if (
-    role === "Head" ||
-    role === "Department Head" ||
-    role === "Department head"
-  ) {
-    return db.tasks.filter(
-      (t) => ids.includes(t.assignee) || t.assigner === scope(),
-    );
-  }
-  if (role === "Project Head" || role === "Project lead") {
-    let ps = db.projects.filter((p) => p.lead === scope()).map((p) => p.name);
-    return db.tasks.filter((t) => ps.includes(t.project));
-  }
-  let assignedProjects = person(scope())?.projects || [];
-  return db.tasks.filter(
-    (t) => !!t.project && assignedProjects.includes(t.project),
-  );
+  return db.tasks;
 }
 function canManageMember(m) {
   if (isAdmin()) return true;
@@ -266,29 +946,21 @@ function canManageMember(m) {
   );
 }
 function canAssignTo(m) {
-  return canManageMember(m);
+  return isAdmin() || isExecutive() || canManageMember(m);
 }
 function allowedProjects() {
-  if (isAdmin() || isExecutive()) return db.projects;
-  if (role === "Project Head" || role === "Project lead")
-    return db.projects.filter((p) => p.lead === scope());
-  if (isHeadRole()) {
-    let ds = db.departments
-      .filter((d) => d.head === scope())
-      .map((d) => d.name);
-    return db.projects.filter((p) =>
-      db.members.some(
-        (m) =>
-          deptsOf(m).some((d) => ds.includes(d)) && m.projects.includes(p.name),
-      ),
-    );
-  }
-  return db.projects.filter((p) => person(scope())?.projects.includes(p.name));
+  return db.projects;
 }
 function show(view) {
+  if (view === "administration" && !isAdmin()) view = "home";
+  if (["departments", "projects"].includes(view)) structureMode = view;
+  else if (view === "structure") structureMode = "structure";
+  const activeView = ["departments", "projects"].includes(view)
+    ? "structure"
+    : view;
   document
     .querySelectorAll(".view")
-    .forEach((v) => v.classList.toggle("active", v.id === view));
+    .forEach((v) => v.classList.toggle("active", v.id === activeView));
   document
     .querySelectorAll<HTMLButtonElement>(".nav button")
     .forEach((b) => b.classList.toggle("active", b.dataset.view === view));
@@ -297,8 +969,13 @@ function show(view) {
       home: "Overview",
       members: "Members",
       tasks: "Tasks",
+      calendar: "Calendar",
+      administration: "Administration",
+      departments: "Departments",
+      projects: "Projects",
       structure: "Departments & projects",
     }[view] || "Overview";
+  if (activeView === "structure") renderStructure();
 }
 document
   .querySelectorAll<HTMLButtonElement>(".nav button")
@@ -306,40 +983,7 @@ document
 document
   .querySelectorAll<HTMLElement>("[data-go]")
   .forEach((b) => (b.onclick = () => show(b.dataset.go)));
-$("roleSelect").onchange = (e) => {
-  role = e.target.value;
-  selectedPerson = "";
-  render();
-};
-$("personSelect").onchange = (e) => {
-  selectedPerson = e.target.value;
-  render();
-};
 function render() {
-  const choices =
-    role === "Head" || role === "Department Head" || role === "Department head"
-      ? db.departments
-          .filter((d) => d.head)
-          .map((d) => person(d.head))
-          .filter(Boolean)
-      : role === "Project Head" || role === "Project lead"
-        ? db.projects
-            .filter((d) => d.lead)
-            .map((d) => person(d.lead))
-            .filter(Boolean)
-        : db.members;
-  $("personSelect").classList.toggle("hidden", isAdmin());
-  $("personSelect").innerHTML =
-    [
-      ...new Map<string, any>(
-        choices.map((m) => [m.id, m] as [string, any]),
-      ).values(),
-    ]
-      .map(
-        (m) =>
-          `<option value="${m.id}" ${m.id === scope() ? "selected" : ""}>${esc(m.name)}</option>`,
-      )
-      .join("") || '<option value="">No people assigned yet</option>';
   fill(
     "memberDeptFilter",
     db.departments.map((d) => d.name),
@@ -362,15 +1006,23 @@ function render() {
     '<option value="">Choose a member</option>' + members;
   $("projectLead").innerHTML =
     '<option value="">Choose a member</option>' + members;
-  const leader = isAdmin() || isExecutive() || isHeadRole();
-  $("addMemberBtn").classList.toggle("hidden", !isAdmin());
-  $("importMembersBtn").classList.toggle("hidden", !isAdmin());
-  $("addDept").closest(".form").classList.toggle("hidden", !isAdmin());
-  $("addProject").closest(".form").classList.toggle("hidden", !isAdmin());
+  const leader =
+    SHARED_WRITES_ENABLED && (isAdmin() || isExecutive() || isHeadRole());
+  $("addMemberBtn").classList.toggle("hidden", !leader || !isAdmin());
+  $("importMembersBtn").classList.toggle("hidden", !leader || !isAdmin());
+  $("addDept")
+    .closest(".form")
+    .classList.toggle("hidden", !leader || !isAdmin());
+  $("addProject")
+    .closest(".form")
+    .classList.toggle("hidden", !leader || !isAdmin());
   $("addTaskBtn").classList.toggle("hidden", !leader);
+  $("adminNav").classList.toggle("hidden", !isAdmin());
   renderHome();
   renderMembers();
   renderTasks();
+  renderCalendar();
+  renderAdministration();
   renderStructure();
 }
 $("importMembersBtn").onclick = () => {
@@ -467,7 +1119,7 @@ function renderMembers() {
                 .map((r) => `<span class="badge role">${esc(r)}</span>`)
                 .join(
                   " ",
-                )}</div><div>${isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button><button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>` : canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`,
+                )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button><button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`,
           )
           .join("")
       : '<div class="empty"><strong>No members in this view yet.</strong>Add your team one department at a time.</div>');
@@ -492,12 +1144,118 @@ function renderTasks() {
       ? list
           .map(
             (t) =>
-              `<div class="task"><div><div class="row-title">${esc(t.title)}</div><div class="row-sub">${esc(t.description || "")} · assigned by ${esc(personName(t.assigner))}</div>${t.update ? `<div class="progress-update">↳ ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(t.project || "Department task")}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${t.assignee === scope() || canAssignTo(person(t.assignee) || {}) ? `<select class="status-select" data-task-status="${t.id}">${options(["To do", "In progress", "In review", "Done"], t.status)}</select>` : badge(t.status)}</div><div><button class="btn ghost small" data-action="add-update" data-id="${t.id}">＋ Update</button></div></div>`,
+              `<div class="task"><div><div class="row-title">${esc(t.title)}</div><div class="row-sub">${esc(t.description || "")} · assigned by ${esc(personName(t.assigner))}</div>${t.update ? `<div class="progress-update">↳ ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(t.project || "Department task")}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && (t.assignee === scope() || canAssignTo(person(t.assignee) || {})) ? `<select class="status-select" data-task-status="${t.id}">${options(["To do", "In progress", "In review", "Done"], t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `<button class="btn ghost small" data-action="add-update" data-id="${t.id}">＋ Update</button>` : ""}</div></div>`,
           )
           .join("")
       : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
 }
+
+function renderCalendar() {
+  const year = calendarMonth.getFullYear();
+  const month = calendarMonth.getMonth();
+  $("calendarMonthLabel").textContent = calendarMonth.toLocaleDateString(
+    undefined,
+    { month: "long", year: "numeric" },
+  );
+  const tasks = allowedTasks()
+    .filter((task) => {
+      if (!task.due) return false;
+      const due = new Date(`${task.due}T00:00:00`);
+      return due.getFullYear() === year && due.getMonth() === month;
+    })
+    .sort((a, b) => a.due.localeCompare(b.due));
+  $("calendarList").innerHTML = tasks.length
+    ? tasks
+        .map(
+          (task) =>
+            `<div class="row"><div><div class="row-title">${esc(task.title)}</div><div class="row-sub">${esc(task.project || task.department || "Club-wide")} · ${esc(personName(task.assignee))}</div></div><div>${new Date(`${task.due}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div><div>${badge(task.status)}</div></div>`,
+        )
+        .join("")
+    : '<div class="empty"><strong>No deadlines this month.</strong>Tasks with due dates will appear here.</div>';
+}
+
+function renderAdministration() {
+  if (!isAdmin()) return;
+  const pending = db.members.filter(
+    (member) => member.status === "Pending invitation",
+  );
+  $("adminStats").innerHTML = [
+    ["Members", db.members.length, "♙", "club profiles"],
+    ["Pending", pending.length, "✉", "invitation setup"],
+    ["Departments", db.departments.length, "⌘", "skill teams"],
+  ]
+    .map(
+      ([label, value, icon, foot]) =>
+        `<div class="stat"><div class="stat-label"><span class="stat-ico">${icon}</span>${label}</div><strong>${value}</strong><div class="stat-foot">${foot}</div></div>`,
+    )
+    .join("");
+  $("pendingInvitations").innerHTML = pending.length
+    ? pending
+        .map(
+          (member) =>
+            `<div class="row"><div><div class="row-title">${esc(member.name)}</div><div class="row-sub">${esc(member.email)}</div></div><span class="badge role">Pending invitation</span></div>`,
+        )
+        .join("")
+    : '<div class="empty"><strong>Everyone is set up.</strong>New profiles waiting to register will appear here.</div>';
+}
+
+function exportCalendar() {
+  const tasks = allowedTasks().filter((task) => task.due);
+  if (!tasks.length) {
+    alert("There are no task deadlines to export yet.");
+    return;
+  }
+  const escapeIcs = (value: string) =>
+    String(value || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\n/g, "\\n")
+      .replace(/,/g, "\\,")
+      .replace(/;/g, "\\;");
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}/, "");
+  const events = tasks
+    .map((task) => {
+      const start = task.due.replace(/-/g, "");
+      const end = new Date(Date.parse(`${task.due}T00:00:00Z`) + 86400000)
+        .toISOString()
+        .slice(0, 10)
+        .replace(/-/g, "");
+      const description = [
+        task.description,
+        `Assignee: ${personName(task.assignee)}`,
+        `Status: ${task.status}`,
+        `Priority: ${task.priority}`,
+        task.project || task.department || "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return [
+        "BEGIN:VEVENT",
+        `UID:${escapeIcs(task.id)}@vines-club-hub`,
+        `DTSTAMP:${stamp}`,
+        `DTSTART;VALUE=DATE:${start}`,
+        `DTEND;VALUE=DATE:${end}`,
+        `SUMMARY:${escapeIcs(task.title)}`,
+        `DESCRIPTION:${escapeIcs(description)}`,
+        "END:VEVENT",
+      ].join("\r\n");
+    })
+    .join("\r\n");
+  const content = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Vines Club Hub//EN\r\nCALSCALE:GREGORIAN\r\n${events}\r\nEND:VCALENDAR\r\n`;
+  const url = URL.createObjectURL(
+    new Blob([content], { type: "text/calendar;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "vines-club-tasks.ics";
+  link.click();
+  URL.revokeObjectURL(url);
+}
 function renderStructure() {
+  $("departmentCard").classList.toggle("hidden", structureMode === "projects");
+  $("projectCard").classList.toggle("hidden", structureMode === "departments");
   let dlist =
     isAdmin() || isExecutive()
       ? db.departments
@@ -507,7 +1265,7 @@ function renderStructure() {
   $("deptList").innerHTML = dlist
     .map(
       (d) =>
-        `<div class="row"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${db.members.filter((m) => m.department === d.name).length} people · Head: ${esc(personName(d.head))}</div></div>${isAdmin() || isExecutive() ? `<button class="btn ghost small" data-action="edit-lead" data-type="department" data-name="${esc(d.name)}">Set head</button>` : ""}</div>`,
+        `<div class="row"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${db.members.filter((m) => deptsOf(m).includes(d.name)).length} people · Head: ${esc(personName(d.head))}</div></div></div>`,
     )
     .join("");
   let plist =
@@ -521,7 +1279,7 @@ function renderStructure() {
   $("projectList").innerHTML = plist
     .map(
       (p) =>
-        `<div class="row"><div><div class="row-title">${esc(p.name)}</div><div class="row-sub">${db.members.filter((m) => m.projects.includes(p.name)).length} people · Lead: ${esc(personName(p.lead))}</div></div>${isAdmin() || isExecutive() ? `<button class="btn ghost small" data-action="edit-lead" data-type="project" data-name="${esc(p.name)}">Set lead</button>` : ""}</div>`,
+        `<div class="row"><div><div class="row-title">${esc(p.name)}</div><div class="row-sub">${db.members.filter((m) => m.projects.includes(p.name)).length} people · Lead: ${esc(personName(p.lead))}</div></div></div>`,
     )
     .join("");
 }
@@ -599,7 +1357,7 @@ function memberForm(
   $("memberPosition").onchange = sync;
   $("extraPosition").onchange = sync;
   sync();
-  $("memberForm").onsubmit = (e) => {
+  $("memberForm").onsubmit = async (e) => {
     e.preventDefault();
     let f = new FormData(e.target as HTMLFormElement),
       primary = String(f.get("clubRole") || ""),
@@ -642,8 +1400,10 @@ function memberForm(
       projects: assignedProjects,
       headScope: scopeValue,
     };
+    const isNewMember = !m.id;
     if (m.id) Object.assign(m, data);
     else db.members.push({ id: uid(), ...data });
+    const savedMember = m.id ? m : db.members.at(-1);
     if (headRole === "Department Head") {
       let d = db.departments.find((x) => x.name === scopeValue);
       if (d) d.head = m.id || db.members.at(-1).id;
@@ -653,23 +1413,42 @@ function memberForm(
       if (p) p.lead = m.id || db.members.at(-1).id;
     }
     closeModal();
-    save();
+    const saved = await save();
+    if (!saved) return;
+    if (isNewMember) {
+      try {
+        await sendInvitation(savedMember.email);
+        alert(
+          `Profile saved and an invitation was sent to ${savedMember.email}.`,
+        );
+      } catch (error) {
+        alert(
+          `Profile saved as pending. The invitation was not sent: ${error instanceof Error ? error.message : "Check the Supabase email settings."}`,
+        );
+      }
+    }
   };
 }
 function taskForm() {
-  let visible = allowedMembers();
-  let projects = allowedProjects();
+  if (!isAdmin() && !isExecutive() && !isHeadRole()) return;
+  const globalManager = isAdmin() || isExecutive();
+  const managedProjects = db.projects.filter((p) => p.lead === scope());
+  const managedDepartments = db.departments.filter((d) => d.head === scope());
+  const projects = globalManager ? db.projects : managedProjects;
+  const departments = globalManager ? db.departments : managedDepartments;
+  const visible = allowedMembers().filter(canAssignTo);
+  const projectRequired = !globalManager && projects.length > 0;
+  const departmentRequired = !globalManager && !projectRequired;
   openModal(
     "Put a task in motion",
     `<form class="form" id="taskForm"><div class="field full"><label>Task name</label><input name="title" required placeholder="e.g. Cut the opening 20 seconds"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What should the finished work include?"></textarea></div><div class="field"><label>Assign to</label><select name="assignee" required><option value="">Choose a member</option>${visible
-      .filter(canAssignTo)
       .map(
         (m) =>
           `<option value="${m.id}">${esc(m.name)} · ${esc(m.department)}</option>`,
       )
       .join(
         "",
-      )}</select></div><div class="field"><label>Project <span class="quiet">(optional)</span></label><select name="project"><option value="">Department-only task</option>${options(projects.map((p) => p.name))}</select></div><div class="field"><label>Department</label><select name="department"><option value="">Select department</option>${options(db.departments.map((d) => d.name))}</select></div><div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="field"><label>Status</label><select name="status">${options(["To do", "In progress", "In review", "Done"], "To do")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Assign task</button></div></form>`,
+      )}</select></div><div class="field ${projects.length ? "" : "hidden"}"><label>Project</label><select name="project" ${projectRequired ? "required" : ""}><option value="">${projectRequired ? "Choose a project" : "Department-only task"}</option>${options(projects.map((p) => p.name))}</select></div><div class="field ${departments.length ? "" : "hidden"}"><label>Department</label><select name="department" ${departmentRequired ? "required" : ""}><option value="">${departmentRequired ? "Choose your department" : "Select department (optional)"}</option>${options(departments.map((d) => d.name))}</select></div><div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="field"><label>Status</label><select name="status">${options(["To do", "In progress", "In review", "Done"], "To do")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Assign task</button></div></form>`,
   );
   $("taskForm").onsubmit = (e) => {
     e.preventDefault();
@@ -677,7 +1456,7 @@ function taskForm() {
     db.tasks.unshift({
       id: uid(),
       ...v,
-      assigner: isAdmin() ? scope() : scope(),
+      assigner: scope(),
       update: "",
       updates: [],
     });
@@ -717,12 +1496,26 @@ function editMember(id) {
   let m = person(id);
   if (m) memberForm(m);
 }
+async function resendMemberInvitation(id: string) {
+  if (!isAdmin()) return;
+  const member = person(id);
+  if (!member || member.status !== "Pending invitation") return;
+  try {
+    await sendInvitation(member.email);
+    alert(`An invitation was sent to ${member.email}.`);
+  } catch (error) {
+    alert(
+      error instanceof Error ? error.message : "Could not send the invitation.",
+    );
+  }
+}
 function editLead(type, n) {
   if (!isAdmin() && !isExecutive()) return;
   let record =
     type === "department"
       ? db.departments.find((x) => x.name === n)
       : db.projects.find((x) => x.name === n);
+  if (!record) return;
   openModal(
     type === "department"
       ? "Choose a department head"
@@ -836,7 +1629,7 @@ function importMembersCsv(file) {
   if (!file || !isAdmin()) return;
   file
     .text()
-    .then((text) => {
+    .then(async (text) => {
       let rows = parseCsv(text);
       if (rows.length < 2)
         throw new Error(
@@ -966,9 +1759,19 @@ function importMembersCsv(file) {
         }
         db.members.push(m);
       });
-      save();
+      if (!(await save())) return;
+      let sent = 0,
+        failed = 0;
+      for (const member of made) {
+        try {
+          await sendInvitation(member.email);
+          sent++;
+        } catch {
+          failed++;
+        }
+      }
       alert(
-        `${made.length} member profile${made.length === 1 ? "" : "s"} imported as pending invitations. Email invitations will work after Supabase is connected.`,
+        `${made.length} profiles saved. ${sent} invitation${sent === 1 ? "" : "s"} sent${failed ? `; ${failed} not sent. Check Supabase email delivery settings and try those again.` : "."}`,
       );
     })
     .catch((e) => alert(e.message || "Could not read the CSV file."));
@@ -985,6 +1788,9 @@ document.addEventListener("click", (event) => {
   switch (target.dataset.action) {
     case "edit-member":
       editMember(target.dataset.id || "");
+      break;
+    case "resend-invitation":
+      void resendMemberInvitation(target.dataset.id || "");
       break;
     case "toggle-system-access":
       toggleSystemAccess(target.dataset.id || "");
@@ -1017,6 +1823,29 @@ $("memberProjectFilter").onchange = renderMembers;
 $("taskSearch").oninput = renderTasks;
 $("taskStatusFilter").onchange = renderTasks;
 $("taskProjectFilter").onchange = renderTasks;
+$("calendarPrev").onclick = () => {
+  calendarMonth = new Date(
+    calendarMonth.getFullYear(),
+    calendarMonth.getMonth() - 1,
+    1,
+  );
+  renderCalendar();
+};
+$("calendarNext").onclick = () => {
+  calendarMonth = new Date(
+    calendarMonth.getFullYear(),
+    calendarMonth.getMonth() + 1,
+    1,
+  );
+  renderCalendar();
+};
+$("exportCalendar").onclick = exportCalendar;
+$("adminAddMember").onclick = () => {
+  if (isAdmin()) {
+    show("members");
+    memberForm();
+  }
+};
 $("addDept").onclick = () => {
   let n = $("deptName").value.trim();
   if (
@@ -1024,6 +1853,7 @@ $("addDept").onclick = () => {
     !db.departments.some((d) => d.name.toLowerCase() === n.toLowerCase())
   ) {
     db.departments.push({
+      id: uid(),
       name: n,
       head: $("deptHead").value || "",
       description: "",
@@ -1036,6 +1866,7 @@ $("addProject").onclick = () => {
   let n = $("projectName").value.trim();
   if (n && !db.projects.some((p) => p.name.toLowerCase() === n.toLowerCase())) {
     db.projects.push({
+      id: uid(),
       name: n,
       lead: $("projectLead").value || "",
       description: "",
@@ -1047,4 +1878,5 @@ $("addProject").onclick = () => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
 });
-render();
+showAuthGate();
+void initializeSupabase();

@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "description": "Flask and TypeScript workspace for the Vines university media club.",
   "scripts": {
-    "build": "tsc --project tsconfig.json",
-    "watch": "tsc --project tsconfig.json --watch",
+    "build": "tsc --project tsconfig.json && esbuild app/static/ts/app.ts --bundle --format=iife --target=es2022 --outfile=app/static/js/app.js",
+    "watch": "esbuild app/static/ts/app.ts --bundle --format=iife --target=es2022 --outfile=app/static/js/app.js --watch",
     "dev:worker": "uv run pywrangler dev",
     "deploy:worker": "uv run pywrangler deploy",
     "preview:worker": "uv run pywrangler preview",
@@ -14,5 +14,9 @@
   "devDependencies": {
     "prettier": "^3.10.1",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.119.2",
+    "esbuild": "0.28.2"
   }
 }

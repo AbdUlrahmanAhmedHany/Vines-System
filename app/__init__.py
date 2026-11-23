@@ -1,6 +1,14 @@
 """Flask application factory for the Vines Club Hub."""
 
 from pathlib import Path
+import json
+import hashlib
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
@@ -45,5 +53,230 @@ def create_app() -> Flask:
     @app.get("/healthz")
     def healthcheck():
         return jsonify(status="ok", app="Vines Club Hub")
+
+    @app.get("/api/config")
+    def public_config():
+        workers_env = request.environ.get("workers.env")
+
+        def setting(name: str) -> str:
+            if workers_env is not None:
+                value = getattr(workers_env, name, None)
+                if value:
+                    return str(value)
+            return os.environ.get(name, "")
+
+        return jsonify(
+            supabaseUrl=setting("SUPABASE_URL"),
+            supabasePublishableKey=setting("SUPABASE_PUBLISHABLE_KEY"),
+        )
+
+    def worker_setting(name: str) -> str:
+        workers_env = request.environ.get("workers.env")
+        if workers_env is not None:
+            value = getattr(workers_env, name, None)
+            if value:
+                return str(value)
+        return os.environ.get(name, "")
+
+    def upstream(path: str, method: str, key: str, bearer: str, body=None):
+        base_url = worker_setting("SUPABASE_URL").rstrip("/")
+        if not base_url or not key:
+            raise RuntimeError("Supabase server settings are not configured.")
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {bearer or key}",
+            "Accept": "application/json",
+        }
+        payload = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            payload = json.dumps(body).encode("utf-8")
+        url = f"{base_url}/{path}"
+        workers_env = request.environ.get("workers.env")
+        if workers_env is not None:
+            from js import Object, fetch
+            from pyodide.ffi import run_sync, to_js
+
+            options = {"method": method, "headers": headers}
+            if payload is not None:
+                options["body"] = payload.decode("utf-8")
+            response = run_sync(
+                fetch(url, to_js(options, dict_converter=Object.fromEntries))
+            )
+            text = run_sync(response.text())
+            try:
+                data = json.loads(text) if text else None
+            except ValueError:
+                data = {"message": "Supabase returned an unreadable response."}
+            return int(response.status), data
+
+        req = Request(url, data=payload, headers=headers, method=method)
+        try:
+            with urlopen(req, timeout=15) as response:
+                text = response.read().decode("utf-8")
+                return response.status, json.loads(text) if text else None
+        except HTTPError as error:
+            text = error.read().decode("utf-8", errors="replace")
+            try:
+                data = json.loads(text) if text else None
+            except ValueError:
+                data = {"message": "Supabase rejected the request."}
+            return error.code, data
+        except (URLError, TimeoutError) as error:
+            raise RuntimeError("Could not reach Supabase.") from error
+
+    def authenticated_user(secret: str):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None, None
+        token = auth_header[7:].strip()
+        if not token:
+            return None, None
+        status, user = upstream("auth/v1/user", "GET", secret, token)
+        if status != 200 or not isinstance(user, dict) or not user.get("email"):
+            return None, None
+        return token, user
+
+    @app.post("/api/invitations")
+    def send_member_invitation():
+        secret = worker_setting("SUPABASE_SECRET_KEY")
+        if not secret:
+            return jsonify(error="Invitation sending is not configured on the server."), 503
+        try:
+            token, user = authenticated_user(secret)
+            if not token:
+                return jsonify(error="Sign in again before sending an invitation."), 401
+            email = str((request.get_json(silent=True) or {}).get("email", "")).strip().lower()
+            if not email or "@" not in email:
+                return jsonify(error="Enter a valid member email address."), 400
+
+            query = urlencode({"select": "id,email,is_club_admin,status", "email": f"ilike.{email}", "limit": "1"})
+            status, profiles = upstream(
+                f"rest/v1/members?{query}", "GET", secret, secret
+            )
+            if status != 200 or not isinstance(profiles, list):
+                return jsonify(error="Could not verify the member profile."), 502
+            admins = [
+                profile for profile in profiles
+                if str(profile.get("email", "")).lower() == str(user["email"]).lower()
+                and profile.get("is_club_admin") is True
+                and profile.get("status") == "Active"
+            ]
+            if not admins:
+                return jsonify(error="Only the active system admin can send invitations."), 403
+
+            query = urlencode({"select": "id,email,status", "email": f"ilike.{email}", "limit": "2"})
+            status, targets = upstream(f"rest/v1/members?{query}", "GET", secret, secret)
+            if status != 200 or not isinstance(targets, list):
+                return jsonify(error="Could not verify the target member profile."), 502
+            targets = [m for m in targets if str(m.get("email", "")).lower() == email]
+            if len(targets) != 1:
+                return jsonify(error="Create exactly one member profile for this email first."), 404
+            if targets[0].get("status") != "Pending invitation":
+                return jsonify(error="This profile is not waiting for an invitation."), 409
+
+            invite_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+            invite_status, _ = upstream(
+                "rest/v1/invitations",
+                "POST",
+                secret,
+                secret,
+                {
+                    "member_id": targets[0]["id"],
+                    "token_hash": invite_hash,
+                    "expires_at": expires_at,
+                    "created_by": admins[0]["id"],
+                },
+            )
+            if invite_status not in (200, 201, 204):
+                return jsonify(error="Could not prepare the invitation record."), 502
+
+            redirect_to = f"{request.url_root.rstrip('/')}/?flow=invite"
+            invite_path = "auth/v1/invite?" + urlencode({"redirect_to": redirect_to})
+            invite_status, result = upstream(
+                invite_path, "POST", secret, secret, {"email": email}
+            )
+            if invite_status not in (200, 201):
+                invite_status, result = upstream(
+                    "auth/v1/resend",
+                    "POST",
+                    secret,
+                    secret,
+                    {
+                        "type": "signup",
+                        "email": email,
+                        "options": {"emailRedirectTo": redirect_to},
+                    },
+                )
+            if invite_status not in (200, 201):
+                delete_query = urlencode({"token_hash": f"eq.{invite_hash}"})
+                upstream(
+                    f"rest/v1/invitations?{delete_query}",
+                    "DELETE",
+                    secret,
+                    secret,
+                )
+                return jsonify(error="Supabase could not send the invitation. Check Auth email delivery settings."), 502
+            return jsonify(ok=True, email=email), 202
+        except RuntimeError as error:
+            return jsonify(error=str(error)), 503
+
+    @app.post("/api/activate-invited-member")
+    def activate_invited_member():
+        secret = worker_setting("SUPABASE_SECRET_KEY")
+        if not secret:
+            return jsonify(error="Account activation is not configured on the server."), 503
+        try:
+            token, user = authenticated_user(secret)
+            if not token:
+                return jsonify(error="Open your invitation link and sign in again."), 401
+            email = str(user.get("email", "")).strip().lower()
+            query = urlencode({"select": "id,status", "email": f"ilike.{email}", "limit": "2"})
+            status, profiles = upstream(f"rest/v1/members?{query}", "GET", secret, secret)
+            if status != 200 or not isinstance(profiles, list):
+                return jsonify(error="Could not verify your member profile."), 502
+            profiles = [m for m in profiles if m.get("status") == "Pending invitation"]
+            if len(profiles) != 1:
+                return jsonify(error="No unique pending member profile matches this account."), 409
+            member_id = profiles[0]["id"]
+            now = datetime.now(timezone.utc).isoformat()
+            query = urlencode(
+                {
+                    "select": "token_hash",
+                    "member_id": f"eq.{member_id}",
+                    "accepted_at": "is.null",
+                    "expires_at": f"gt.{now}",
+                    "order": "created_at.desc",
+                    "limit": "1",
+                }
+            )
+            status, invitations = upstream(
+                f"rest/v1/invitations?{query}", "GET", secret, secret
+            )
+            if status != 200 or not isinstance(invitations, list) or not invitations:
+                return jsonify(error="This invitation is missing or expired. Ask the system admin for a new one."), 403
+            query = urlencode({"id": f"eq.{member_id}", "status": "eq.Pending invitation"})
+            status, _ = upstream(
+                f"rest/v1/members?{query}",
+                "PATCH",
+                secret,
+                secret,
+                {"status": "Active"},
+            )
+            if status not in (200, 204):
+                return jsonify(error="Could not activate the invited member."), 502
+            token_hash = invitations[0]["token_hash"]
+            query = urlencode({"token_hash": f"eq.{token_hash}"})
+            upstream(
+                f"rest/v1/invitations?{query}",
+                "PATCH",
+                secret,
+                secret,
+                {"accepted_at": now},
+            )
+            return jsonify(ok=True), 200
+        except RuntimeError as error:
+            return jsonify(error=str(error)), 503
 
     return app
