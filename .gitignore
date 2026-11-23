@@ -1,0 +1,21 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Node / TypeScript
+node_modules/
+npm-debug.log*
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.dev.vars
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

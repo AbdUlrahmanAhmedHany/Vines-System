@@ -1,0 +1,15 @@
+{
+  "name": "vines-club-hub",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Flask and TypeScript workspace for the Vines university media club.",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "watch": "tsc --project tsconfig.json --watch",
+    "format": "prettier --write app/templates/index.html app/static/css/styles.css app/static/ts/app.ts shared-app/README.md README.md package.json tsconfig.json"
+  },
+  "devDependencies": {
+    "prettier": "^3.10.1",
+    "typescript": "^5.9.3"
+  }
+}

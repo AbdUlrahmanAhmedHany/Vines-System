@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#10231c" />
+    <title>Vines — Club Hub</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/styles.css') }}"
+    />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="side">
+        <div class="brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+              <path
+                d="M7 30C10 15 22 7 38 8c-2 16-10 28-25 31"
+                stroke="currentColor"
+                stroke-width="4"
+                stroke-linecap="round"
+              />
+              <path
+                d="M12 36c8-9 15-15 24-22M22 25c-1-5-5-8-10-8m12 14c5 0 9 2 11 6"
+                stroke="currentColor"
+                stroke-width="3"
+                stroke-linecap="round"
+              />
+            </svg>
+          </div>
+          <div class="brand-name">
+            Vines Club Hub<small>University media club</small>
+          </div>
+        </div>
+        <div class="club-label">Club space</div>
+        <nav class="nav">
+          <button class="active" data-view="home">
+            <span class="nav-ico">✳</span>Overview</button
+          ><button data-view="members">
+            <span class="nav-ico">♙</span>Members</button
+          ><button data-view="tasks"><span class="nav-ico">✓</span>Tasks</button
+          ><button data-view="structure">
+            <span class="nav-ico">⌘</span>Departments & projects
+          </button>
+        </nav>
+        <div class="side-bottom">
+          <div class="side-note">
+            <span class="leaf-dot">✳</span
+            ><strong>Good stories take a team.</strong>
+            <p>
+              Give every person a place to grow and every project a clear next
+              step.
+            </p>
+          </div>
+          <div class="side-copy">VINES · MAKE SOMETHING GOOD</div>
+        </div>
+      </aside>
+      <main class="main">
+        <header class="top">
+          <div class="top-left">
+            <div class="mobile-mark"></div>
+            <div>
+              <div class="eyebrow">Your club, in sync</div>
+              <h1 id="pageTitle">Overview</h1>
+            </div>
+          </div>
+          <div class="controls">
+            <span class="view-as">Previewing access</span
+            ><select class="select" id="roleSelect" aria-label="Preview access">
+              <option>System admin access</option>
+              <option>Department Head</option>
+              <option>Project Head</option>
+              <option>President</option>
+              <option>Vice President</option>
+              <option>Member</option></select
+            ><select
+              class="select hidden"
+              id="personSelect"
+              aria-label="Preview person"
+            ></select>
+          </div>
+        </header>
+        <section class="view active" id="home">
+          <div class="hero">
+            <div class="hero-copy">
+              <div class="hero-kicker"><span>✳</span> Vines media club</div>
+              <h2>Make something<br />people remember.</h2>
+              <p>
+                People bring the skills. Projects bring the stories. This is
+                where they meet.
+              </p>
+            </div>
+            <div class="hero-graphic">
+              <span class="orbit one">✦</span><span class="orbit two">✳</span>
+              <div class="hero-stamp">
+                <svg viewBox="0 0 80 80" fill="none">
+                  <path
+                    d="M15 53C20 30 38 17 66 15c-3 27-17 45-43 50"
+                    stroke="#11281d"
+                    stroke-width="5"
+                    stroke-linecap="round"
+                  />
+                  <path
+                    d="M24 60c14-16 25-26 40-39M39 44c-2-9-8-14-17-14m20 22c8 0 14 3 19 10"
+                    stroke="#11281d"
+                    stroke-width="4"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div class="stat-grid" id="stats"></div>
+          <div class="dashboard-grid">
+            <div class="card">
+              <div class="card-head">
+                <div class="card-title">
+                  <span class="card-icon">✦</span>
+                  <h3>Coming up</h3>
+                </div>
+                <button class="btn ghost small" data-go="tasks">
+                  Open tasks →
+                </button>
+              </div>
+              <div id="homeTasks"></div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <div class="card-title">
+                  <span class="card-icon mint">⌘</span>
+                  <h3>Across the club</h3>
+                </div>
+                <button class="btn ghost small" data-go="structure">
+                  Explore
+                </button>
+              </div>
+              <div class="progress-line">
+                <span class="progress-demo"></span>
+              </div>
+              <div class="quiet" id="structureSummary"></div>
+              <div id="homeStructure" class="structure-list spaced-12"></div>
+            </div>
+          </div>
+        </section>
+        <section class="view" id="members">
+          <div class="section-title">
+            <div>
+              <h2>People make Vines.</h2>
+              <p>One department home. Any number of project teams.</p>
+            </div>
+            <div class="controls">
+              <button class="btn ghost" id="importMembersBtn">Import CSV</button
+              ><input
+                class="hidden"
+                id="memberCsv"
+                type="file"
+                accept=".csv,text/csv"
+              /><button class="btn lime" id="addMemberBtn">
+                ＋ Add member
+              </button>
+            </div>
+          </div>
+          <div class="filters">
+            <input id="memberSearch" placeholder="Search the roster" /><select
+              class="select"
+              id="memberDeptFilter"
+            >
+              <option value="">All departments</option></select
+            ><select class="select" id="memberProjectFilter">
+              <option value="">All projects</option>
+            </select>
+          </div>
+          <div class="data-table" id="memberList"></div>
+        </section>
+        <section class="view" id="tasks">
+          <div class="section-title">
+            <div>
+              <h2>Make the next move.</h2>
+              <p>
+                Every task has an owner, a deadline, and somewhere to share
+                progress.
+              </p>
+            </div>
+            <button class="btn lime" id="addTaskBtn">＋ Assign a task</button>
+          </div>
+          <div class="filters">
+            <input id="taskSearch" placeholder="Search tasks" /><select
+              class="select"
+              id="taskStatusFilter"
+            >
+              <option value="">All statuses</option>
+              <option>To do</option>
+              <option>In progress</option>
+              <option>In review</option>
+              <option>Done</option></select
+            ><select class="select" id="taskProjectFilter">
+              <option value="">All projects</option>
+            </select>
+          </div>
+          <div class="data-table" id="taskList"></div>
+        </section>
+        <section class="view" id="structure">
+          <div class="section-title">
+            <div>
+              <h2>One club. Two directions.</h2>
+              <p>
+                Departments grow the craft. Projects turn it into something
+                people can watch.
+              </p>
+            </div>
+          </div>
+          <div class="section-card">
+            <div class="card">
+              <div class="card-head">
+                <div class="card-title">
+                  <span class="card-icon mint">🌱</span>
+                  <h3>Departments</h3>
+                </div>
+                <span class="badge role">Skill & support</span>
+              </div>
+              <p class="quiet">
+                Department heads coach members, give feedback, balance
+                workloads, keep quality high, and place members on projects.
+              </p>
+              <div class="form">
+                <div class="field">
+                  <label>New department</label
+                  ><input id="deptName" placeholder="e.g. Videography" />
+                </div>
+                <div class="field">
+                  <label>Head</label
+                  ><select class="select" id="deptHead">
+                    <option value="">Choose a member</option>
+                  </select>
+                </div>
+                <div class="form-actions">
+                  <button class="btn small" id="addDept">Add department</button>
+                </div>
+              </div>
+              <div class="structure-list spaced-15" id="deptList"></div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <div class="card-title">
+                  <span class="card-icon coral">🎬</span>
+                  <h3>Projects</h3>
+                </div>
+                <span class="badge high">Stories & deadlines</span>
+              </div>
+              <p class="quiet">
+                Project leads split the work into tasks, assign owners, and keep
+                the team on schedule.
+              </p>
+              <div class="form">
+                <div class="field">
+                  <label>New project</label
+                  ><input id="projectName" placeholder="e.g. Reels" />
+                </div>
+                <div class="field">
+                  <label>Project lead</label
+                  ><select class="select" id="projectLead">
+                    <option value="">Choose a member</option>
+                  </select>
+                </div>
+                <div class="form-actions">
+                  <button class="btn small" id="addProject">Add project</button>
+                </div>
+              </div>
+              <div class="structure-list spaced-15" id="projectList"></div>
+            </div>
+          </div>
+          <div class="card spaced-14">
+            <div class="card-head">
+              <div class="card-title">
+                <span class="card-icon blue">↗</span>
+                <h3>How reporting works</h3>
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <div class="row-title">Your department head</div>
+                <div class="row-sub">
+                  Coaching, editing guidance, feedback, workload balance and
+                  quality.
+                </div>
+              </div>
+              <span class="badge role">Craft</span>
+            </div>
+            <div class="row">
+              <div>
+                <div class="row-title">Your project lead</div>
+                <div class="row-sub">
+                  Task assignment, deadlines and delivery for that project.
+                </div>
+              </div>
+              <span class="badge progress">Delivery</span>
+            </div>
+            <div class="note">
+              Members can belong to a department without joining a project. HR,
+              PR and OC work can stay department-only.
+            </div>
+          </div>
+        </section>
+        <div class="system-note">
+          <span>✳</span
+          ><span
+            ><b>Prototype preview:</b> saved in this browser only. A hosted
+            version with real member accounts and shared updates will need an
+            app backend.</span
+          >
+        </div>
+      </main>
+    </div>
+    <div class="modal" id="modal">
+      <div class="dialog">
+        <div class="dialog-head">
+          <h2 id="modalTitle"></h2>
+          <button class="x" id="closeModal" aria-label="Close">×</button>
+        </div>
+        <div id="modalBody"></div>
+      </div>
+    </div>
+    <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+  </body>
+</html>

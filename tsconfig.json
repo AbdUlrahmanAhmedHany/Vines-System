@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "module": "None",
+    "rootDir": "app/static/ts",
+    "outDir": "app/static/js",
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "sourceMap": true
+  },
+  "include": ["app/static/ts/**/*.ts"]
+}
