@@ -159,7 +159,8 @@ button {
   min-width: 0;
   max-width: 1500px;
   width: 100%;
-  margin: auto;
+  margin: 0;
+  align-self: start;
   padding: 28px clamp(20px, 4vw, 58px) 64px;
 }
 .top {
@@ -671,7 +672,12 @@ textarea:focus {
 .member {
   grid-template-columns:
     minmax(170px, 1.35fr) minmax(115px, 0.9fr) minmax(130px, 1.1fr)
-    minmax(100px, 0.7fr) auto;
+    minmax(100px, 0.7fr) 250px;
+}
+.member > :last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .task {
   grid-template-columns:
@@ -880,7 +886,7 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
   .member {
-    grid-template-columns: 1.3fr 1fr 1.2fr auto;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.2fr) 220px;
   }
   .member > :nth-child(4) {
     display: none;
