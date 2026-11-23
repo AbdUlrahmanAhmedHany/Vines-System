@@ -4,6 +4,10 @@
   "main": "worker.py",
   "compatibility_date": "2026-11-23",
   "compatibility_flags": ["python_workers"],
+  "vars": {
+    "SUPABASE_URL": "https://nxqaimkjpzmxkacjdhoa.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_dvhNjBztBGkhLEVx8SZ6NA_BEJz0h0e",
+  },
   "assets": {
     "directory": "./app",
     "binding": "ASSETS",
