@@ -669,16 +669,14 @@ textarea:focus {
   border-top: 1px solid #edf0eb;
 }
 .member {
-  grid-template-columns: minmax(170px, 1.35fr) minmax(115px, 0.9fr) minmax(
-      130px,
-      1.1fr
-    ) minmax(100px, 0.7fr) auto;
+  grid-template-columns:
+    minmax(170px, 1.35fr) minmax(115px, 0.9fr) minmax(130px, 1.1fr)
+    minmax(100px, 0.7fr) auto;
 }
 .task {
-  grid-template-columns: minmax(180px, 1.5fr) minmax(110px, 0.9fr) minmax(
-      95px,
-      0.8fr
-    ) minmax(90px, 0.7fr) minmax(112px, 0.8fr) minmax(120px, 0.9fr) auto;
+  grid-template-columns:
+    minmax(180px, 1.5fr) minmax(110px, 0.9fr) minmax(95px, 0.8fr)
+    minmax(90px, 0.7fr) minmax(112px, 0.8fr) minmax(120px, 0.9fr) auto;
 }
 .member.header,
 .task.header {

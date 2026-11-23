@@ -6,7 +6,10 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "watch": "tsc --project tsconfig.json --watch",
-    "format": "prettier --write app/templates/index.html app/static/css/styles.css app/static/ts/app.ts shared-app/README.md README.md package.json tsconfig.json"
+    "dev:worker": "uv run pywrangler dev",
+    "deploy:worker": "uv run pywrangler deploy",
+    "preview:worker": "uv run pywrangler preview",
+    "format": "prettier --write app/templates/index.html app/static/css/styles.css app/static/ts/app.ts shared-app/README.md README.md package.json tsconfig.json wrangler.jsonc"
   },
   "devDependencies": {
     "prettier": "^3.10.1",

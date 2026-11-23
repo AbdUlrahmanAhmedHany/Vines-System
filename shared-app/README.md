@@ -6,7 +6,7 @@ The current Flask webpage at `../app/templates/index.html` is a local preview us
 
 - **Supabase Auth** will use email and password; Supabase Database stores members, departments, projects, assignments, tasks, and updates.
 - There will be no public sign-up page. The app will use `signInWithPassword`; the admin-only server function will invite pre-created roster members through Supabase Auth. The invitation email lets each member verify their email and set a password. A password reset email handles forgotten passwords. These app flows are not implemented yet.
-- The website now runs locally through Flask, with TypeScript source compiled to browser JavaScript. Hosting has not been configured. A static-only host will not run the Flask app; choose a Python-capable host or adapt the project for the chosen hosting platform.
+- The website runs locally through Flask, with TypeScript source compiled to browser JavaScript. A Cloudflare Python Worker adapter is now included in `../worker.py` and `../wrangler.jsonc`; the Worker still serves only the local-storage preview until Supabase integration is implemented.
 
 ## Email delivery requirement
 
@@ -28,7 +28,8 @@ The global system admin is a permission on a member profile, not a club position
 - Add the email/password sign-in, invite acceptance/password setup, password reset, and shared data loading/saving. The current webpage still stores preview data in this browser only.
 - Add Flask routes that verify the signed-in admin session, create the roster profile, and call Supabase Auth's `inviteUserByEmail`. Keep Supabase's secret key server-side; never put it in browser code or commit it.
 - Add the Supabase project URL and publishable key as public app configuration; add the Supabase secret key only as a protected environment variable on the selected host.
-- Configure deployment for the selected Python-capable host, then set its final URL as Supabase's Site URL and allow the app's exact invite/reset/callback URLs.
+- Connect the GitHub repository to Cloudflare Workers Builds. Use `npm run build` as the build command and `uv run pywrangler deploy` as the deploy command. The Worker name in Cloudflare must match `vines-system` in `wrangler.jsonc`.
+- After the app implements its real auth routes, set the final `workers.dev` address as Supabase's Site URL and allow only the exact invite/reset/callback URLs it uses.
 - The webpage preview supports individual profiles and CSV import (Excel files can be saved as CSV first), with duplicate email and assignment validation. Connect those actions to the secured invitation and database flow before opening the site to members.
 - Verify project members can see only their assigned project work, department heads are scoped to their department, and President/Vice President have global work access without assignment write access.
 

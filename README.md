@@ -13,6 +13,9 @@ app/
     css/styles.css         Extracted responsive styles
     ts/app.ts              Browser behavior source
     js/app.js              Compiled TypeScript served by Flask
+worker.py                  Cloudflare Python Worker entry point
+wrangler.jsonc             Cloudflare Worker and static asset configuration
+pyproject.toml              Python Worker dependencies
 shared-app/                 Supabase schema, migrations, and planning notes
 run.py                      Local Flask entry point
 requirements.txt            Python dependencies
@@ -37,6 +40,18 @@ Open <http://127.0.0.1:5000>.
 
 While editing TypeScript, `npm run watch` rebuilds `app/static/js/app.js` as files change. Flask serves the compiled file; the browser does not run `.ts` directly.
 
+## Cloudflare Workers preview
+
+The repository includes a Cloudflare Python Worker adapter for the Flask preview. Cloudflare's Workers Builds screen should use:
+
+- Project name: `vines-system` (must match `wrangler.jsonc`)
+- Build command: `npm run build`
+- Deploy command: `uv run pywrangler deploy`
+- Preview command: `uv run pywrangler preview`
+- Root directory: leave blank
+
+For local Worker development, install [uv](https://docs.astral.sh/uv/) and Node.js, then run `npm install` and `uv run pywrangler dev`. The current Worker hosts the same local-storage preview only; it does not provide member authentication or shared database storage.
+
 ## Current capabilities and limits
 
 - The dashboard, member, task, department, and project screens are a local preview.
@@ -58,4 +73,4 @@ The current database setup instructions are in [shared-app/README.md](shared-app
 
 ## Hosting
 
-This project runs as a Flask app locally. Static hosting by itself cannot run its Flask routes. Choose a Python-capable host or adapt the project for Cloudflare Workers before deployment; the current local preview is not ready for member access.
+Cloudflare Workers can run the Flask app through Python Workers. The Worker configuration is in `wrangler.jsonc`. Do not invite members or store real club data until Supabase Auth, database access, and server-enforced permissions are implemented and verified.
