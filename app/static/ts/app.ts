@@ -119,6 +119,8 @@ function load() {
         ...t,
         description: t.description || "",
         status: t.status || (t.assignee ? "Pending" : "Unassigned"),
+        projects: t.projects || [t.project].filter(Boolean),
+        departments: t.departments || [t.department].filter(Boolean),
         priority: t.priority || "Medium",
         update: t.update || "",
         updates: t.updates || [],
@@ -344,6 +346,8 @@ async function loadSharedWorkspace() {
       .select(
         "id,title,description,task_type,project_id,department_id,assignee_id,assigned_by,status,priority,due_at,progress_update",
       ),
+    supabase.from("task_projects").select("task_id,project_id"),
+    supabase.from("task_departments").select("task_id,department_id"),
     supabase.from("task_updates").select("task_id,author_id,note,created_at"),
     supabase
       .from("member_positions")
@@ -360,6 +364,8 @@ async function loadSharedWorkspace() {
     memberDepartments,
     assignments,
     tasks,
+    taskProjects,
+    taskDepartments,
     updates,
     memberPositions,
     positions,
@@ -370,6 +376,24 @@ async function loadSharedWorkspace() {
   const projectNames = new Map<string, string>(
     projects.map((item: any) => [item.id, item.name]),
   );
+  const projectsByTask = new Map<string, string[]>();
+  taskProjects.forEach((item: any) => {
+    const name = projectNames.get(item.project_id);
+    if (name) {
+      const list = projectsByTask.get(item.task_id) || [];
+      if (!list.includes(name)) list.push(name);
+      projectsByTask.set(item.task_id, list);
+    }
+  });
+  const departmentsByTask = new Map<string, string[]>();
+  taskDepartments.forEach((item: any) => {
+    const name = departmentNames.get(item.department_id);
+    if (name) {
+      const list = departmentsByTask.get(item.task_id) || [];
+      if (!list.includes(name)) list.push(name);
+      departmentsByTask.set(item.task_id, list);
+    }
+  });
   const positionNames = new Map<string, string>(
     positions.map((item: any) => [item.id, item.name]),
   );
@@ -498,6 +522,12 @@ async function loadSharedWorkspace() {
       id: item.id,
       title: item.title,
       description: item.description || "",
+      projects:
+        projectsByTask.get(item.id) ||
+        [projectNames.get(item.project_id)].filter(Boolean),
+      departments:
+        departmentsByTask.get(item.id) ||
+        [departmentNames.get(item.department_id)].filter(Boolean),
       project: projectNames.get(item.project_id) || "",
       department: departmentNames.get(item.department_id) || "",
       assignee: item.assignee_id || "",
@@ -784,22 +814,29 @@ async function persistChanges(before: any, after: any) {
 
   const changedTasks = after.tasks.filter((task: any) => {
     const old = before.tasks.find((row: any) => row.id === task.id);
-    return !old || !same(old, task);
+    return (
+      !old ||
+      !same(old, task) ||
+      !same(taskProjects(old), taskProjects(task)) ||
+      !same(taskDepartments(old), taskDepartments(task))
+    );
   });
   if (changedTasks.length) {
     for (const task of changedTasks) {
       const old = before.tasks.find((row: any) => row.id === task.id);
+      const projects = taskProjects(task);
+      const departments = taskDepartments(task);
       const row: any = {
         id: task.id,
         title: task.title,
         description: task.description || "",
-        task_type: task.project
+        task_type: projects.length
           ? "Project task"
-          : task.department
+          : departments.length
             ? "Department task"
             : "Club-wide",
-        project_id: byName(after.projects, task.project || ""),
-        department_id: byName(after.departments, task.department || ""),
+        project_id: byName(after.projects, projects[0] || ""),
+        department_id: byName(after.departments, departments[0] || ""),
         assignee_id: task.assignee || null,
         assigned_by: task.assigner || authProfile.id,
         status: task.status || (task.assignee ? "Pending" : "Unassigned"),
@@ -826,6 +863,54 @@ async function persistChanges(before: any, after: any) {
             .eq("id", task.id);
           if (error) throw new Error(`tasks: ${error.message}`);
         }
+      }
+      const priorProjects = taskProjects(old || {});
+      const priorDepartments = taskDepartments(old || {});
+      for (const name of priorProjects.filter(
+        (name) => !projects.includes(name),
+      )) {
+        const projectId = byName(after.projects, name);
+        if (projectId)
+          await deleteRows("task_projects", {
+            task_id: task.id,
+            project_id: projectId,
+          });
+      }
+      for (const name of priorDepartments.filter(
+        (name) => !departments.includes(name),
+      )) {
+        const departmentId = byName(after.departments, name);
+        if (departmentId)
+          await deleteRows("task_departments", {
+            task_id: task.id,
+            department_id: departmentId,
+          });
+      }
+      const projectRows = projects
+        .filter((name) => !priorProjects.includes(name))
+        .map((name) => ({
+          task_id: task.id,
+          project_id: byName(after.projects, name),
+        }))
+        .filter((item: any) => item.project_id);
+      const departmentRows = departments
+        .filter((name) => !priorDepartments.includes(name))
+        .map((name) => ({
+          task_id: task.id,
+          department_id: byName(after.departments, name),
+        }))
+        .filter((item: any) => item.department_id);
+      if (projectRows.length) {
+        const { error } = await supabase
+          .from("task_projects")
+          .insert(projectRows);
+        if (error) throw new Error(`task_projects: ${error.message}`);
+      }
+      if (departmentRows.length) {
+        const { error } = await supabase
+          .from("task_departments")
+          .insert(departmentRows);
+        if (error) throw new Error(`task_departments: ${error.message}`);
       }
       const oldUpdates = old?.updates || [];
       const newUpdates = task.updates || [];
@@ -905,14 +990,35 @@ function memberRoles(m) {
       : m.clubRole === "Project lead"
         ? "Project Head"
         : m.clubRole;
+  const departmentHeadLabels = db.departments
+    .filter((department) => department.head === m.id)
+    .map((department) => `${department.name} Head`);
+  const projectHeadLabels = db.projects
+    .filter((project) => project.lead === m.id)
+    .map((project) => `${project.name} Project Head`);
   const labels = [...(m.positionNames || []), legacyRole, m.extraRole].filter(
     (position) => position && position !== "Member",
   );
-  if (legacyRole === "Department Head" && m.headScope)
+  if (departmentHeadLabels.length) {
+    labels.push(...departmentHeadLabels);
+    while (labels.includes("Department Head"))
+      labels.splice(labels.indexOf("Department Head"), 1);
+  } else if (legacyRole === "Department Head" && m.headScope) {
     labels.push(`${m.headScope} Head`);
-  if (legacyRole === "Project Head" && m.headScope)
+    while (labels.includes("Department Head"))
+      labels.splice(labels.indexOf("Department Head"), 1);
+  }
+  if (projectHeadLabels.length) {
+    labels.push(...projectHeadLabels);
+    while (labels.includes("Project Head"))
+      labels.splice(labels.indexOf("Project Head"), 1);
+  } else if (legacyRole === "Project Head" && m.headScope) {
     labels.push(`${m.headScope} Project Head`);
-  return [...new Set(labels)].length ? [...new Set(labels)] : ["Member"];
+    while (labels.includes("Project Head"))
+      labels.splice(labels.indexOf("Project Head"), 1);
+  }
+  const unique = [...new Set(labels)];
+  return unique.length ? unique : ["Member"];
 }
 function isAdmin() {
   return role === "System admin access";
@@ -1002,19 +1108,60 @@ function canAssignTo(m) {
 function managedProjects() {
   return db.projects.filter((project) => project.lead === authProfile?.id);
 }
-function canManageProjectTask(task) {
-  return Boolean(
-    task?.project &&
-    (isAdmin() ||
-      isExecutive() ||
-      db.projects.some(
-        (project) =>
-          project.name === task.project && project.lead === authProfile?.id,
-      )),
+function managedDepartments() {
+  return db.departments.filter(
+    (department) => department.head === authProfile?.id,
   );
 }
-function canCreateProjectTask() {
-  return isAdmin() || isExecutive() || managedProjects().length > 0;
+function taskProjects(task) {
+  return task?.projects?.length
+    ? task.projects
+    : [task?.project].filter(Boolean);
+}
+function taskDepartments(task) {
+  return task?.departments?.length
+    ? task.departments
+    : [task?.department].filter(Boolean);
+}
+function taskScopeLabel(task) {
+  return (
+    [...taskProjects(task), ...taskDepartments(task)].join(" · ") || "Club-wide"
+  );
+}
+function canManageTask(task) {
+  if (isAdmin() || isExecutive()) return true;
+  const projectNames = taskProjects(task);
+  if (projectNames.length)
+    return projectNames.some((name) =>
+      db.projects.some(
+        (project) => project.name === name && project.lead === authProfile?.id,
+      ),
+    );
+  return taskDepartments(task).some((name) =>
+    db.departments.some(
+      (department) =>
+        department.name === name && department.head === authProfile?.id,
+    ),
+  );
+}
+function canMarkTaskDone(task) {
+  return Boolean(
+    isAdmin() ||
+    isExecutive() ||
+    taskProjects(task).some((name) =>
+      db.projects.some(
+        (project) => project.name === name && project.lead === authProfile?.id,
+      ),
+    ),
+  );
+}
+function canCreateTask() {
+  return (
+    isAdmin() ||
+    isExecutive() ||
+    managedProjects().length > 0 ||
+    managedDepartments().length > 0
+  );
 }
 function allowedProjects() {
   return db.projects;
@@ -1067,6 +1214,11 @@ function render() {
     allowedProjects().map((p) => p.name),
     "All projects",
   );
+  fill(
+    "taskDepartmentFilter",
+    db.departments.map((department) => department.name),
+    "All departments",
+  );
   let members = db.members
     .map((m) => `<option value="${m.id}">${esc(m.name)}</option>`)
     .join("");
@@ -1086,7 +1238,7 @@ function render() {
     .classList.toggle("hidden", !leader || !isAdmin());
   $("addTaskBtn").classList.toggle(
     "hidden",
-    !SHARED_WRITES_ENABLED || !canCreateProjectTask(),
+    !SHARED_WRITES_ENABLED || !canCreateTask(),
   );
   $("adminNav").classList.toggle("hidden", !isAdmin());
   renderHome();
@@ -1146,7 +1298,7 @@ function renderHome() {
     ? upcoming
         .map(
           (t) =>
-            `<div class="row"><div class="task-mini"><span class="task-marker ${t.due && t.due < new Date().toISOString().slice(0, 10) ? "late" : ""}"></span><div><div class="row-title">${esc(t.title)}</div><div class="row-sub">${esc(personName(t.assignee))} · ${esc(t.project || "Department task")}</div></div></div><div>${badge(t.status)}<div class="row-sub align-right">${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "No due date"}</div></div></div>`,
+            `<div class="row"><div class="task-mini"><span class="task-marker ${t.due && t.due < new Date().toISOString().slice(0, 10) ? "late" : ""}"></span><div><div class="row-title">${esc(t.title)}</div><div class="row-sub">${esc(personName(t.assignee))} · ${esc(taskScopeLabel(t))}</div></div></div><div>${badge(t.status)}<div class="row-sub align-right">${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "No due date"}</div></div></div>`,
         )
         .join("")
     : '<div class="empty"><strong>Your next story starts here.</strong>Assign the first task to bring it to life.</div>';
@@ -1198,7 +1350,8 @@ function renderMembers() {
 function renderTasks() {
   let q = $("taskSearch").value.toLowerCase(),
     sf = $("taskStatusFilter").value,
-    pf = $("taskProjectFilter").value;
+    pf = $("taskProjectFilter").value,
+    df = $("taskDepartmentFilter").value;
   let list = allowedTasks()
     .filter(
       (t) =>
@@ -1206,29 +1359,34 @@ function renderTasks() {
           t.title.toLowerCase().includes(q) ||
           t.description.toLowerCase().includes(q)) &&
         (!sf || t.status === sf) &&
-        (!pf || t.project === pf),
+        (!pf || taskProjects(t).includes(pf)) &&
+        (!df || taskDepartments(t).includes(df)),
     )
     .sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999"));
   $("taskList").innerHTML =
-    `<div class="task header"><span>Task</span><span>Assignee</span><span>Project</span><span>Priority</span><span>Deadline</span><span>Status</span><span></span></div>` +
+    `<div class="task header"><span>Task</span><span>Assignee</span><span>Projects / departments</span><span>Priority</span><span>Deadline</span><span>Status</span><span></span></div>` +
     (list.length
       ? list
           .map((t) => {
-            const canManage = canManageProjectTask(t);
+            const canManage = canManageTask(t);
+            const canMarkDone = canMarkTaskDone(t);
             const canUpdateProgress = Boolean(
               canManage || t.assignee === authProfile?.id,
             );
-            const statusChoices = canManage
-              ? ["Pending", "In progress", "In review", "Done"]
-              : ["Pending", "In progress", "In review"];
+            const statusChoices = [
+              "Pending",
+              "In progress",
+              "In review",
+              ...(canMarkDone ? ["Done"] : []),
+            ];
             const taskTitle = canManage
               ? `<button type="button" class="task-title-button" data-action="assign-task" data-id="${t.id}">${esc(t.title)}</button>`
               : esc(t.title);
             const canEditStatus =
               canUpdateProgress &&
               t.assignee &&
-              (canManage || t.status !== "Done");
-            return `<div class="task"><div><div class="row-title">${taskTitle}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` · assigned by ${esc(personName(t.assigner))}` : ""}</div>${t.update ? `<div class="progress-update">↳ ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(t.project || t.department || "Club task")}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManage ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">＋ Update</button>` : ""}</div></div>`;
+              (canMarkDone || t.status !== "Done");
+            return `<div class="task"><div><div class="row-title">${taskTitle}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` · assigned by ${esc(personName(t.assigner))}` : ""}</div>${t.update ? `<div class="progress-update">↳ ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(taskScopeLabel(t))}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManage ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">＋ Update</button>` : ""}</div></div>`;
           })
           .join("")
       : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
@@ -1252,7 +1410,7 @@ function renderCalendar() {
     ? tasks
         .map(
           (task) =>
-            `<div class="row"><div><div class="row-title">${esc(task.title)}</div><div class="row-sub">${esc(task.project || task.department || "Club-wide")} · ${esc(personName(task.assignee))}</div></div><div>${new Date(`${task.due}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div><div>${badge(task.status)}</div></div>`,
+            `<div class="row"><div><div class="row-title">${esc(task.title)}</div><div class="row-sub">${esc(taskScopeLabel(task))} · ${esc(personName(task.assignee))}</div></div><div>${new Date(`${task.due}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div><div>${badge(task.status)}</div></div>`,
         )
         .join("")
     : '<div class="empty"><strong>No deadlines this month.</strong>Tasks with due dates will appear here.</div>';
@@ -1311,7 +1469,7 @@ function exportCalendar() {
         `Assignee: ${personName(task.assignee)}`,
         `Status: ${task.status}`,
         `Priority: ${task.priority}`,
-        task.project || task.department || "",
+        taskScopeLabel(task),
       ]
         .filter(Boolean)
         .join("\n");
@@ -1514,22 +1672,47 @@ function memberForm(
   };
 }
 function taskForm() {
-  if (!canCreateProjectTask()) return;
-  const projects = isAdmin() || isExecutive() ? db.projects : managedProjects();
-  if (!projects.length) return;
+  if (!canCreateTask()) return;
+  const globalManager = isAdmin() || isExecutive();
+  const projects = globalManager ? db.projects : managedProjects();
+  const departments = globalManager ? db.departments : managedDepartments();
+  if (!projects.length && !departments.length) return;
+  const scopeOptions = (items: any[], name: string) =>
+    items
+      .map(
+        (item) =>
+          `<label class="check"><input type="checkbox" name="${name}" value="${esc(item.name)}">${esc(item.name)}</label>`,
+      )
+      .join("");
   openModal(
-    "Create a project task",
-    `<form class="form" id="taskForm"><div class="field full"><label>Task name</label><input name="title" required placeholder="e.g. Cut the opening 20 seconds"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What should the finished work include?"></textarea></div><div class="field full"><label>Project</label><select name="project" required><option value="">Choose a project</option>${options(projects.map((p) => p.name))}</select><small class="quiet">New tasks start as Unassigned. A project lead or global leader can assign them afterward.</small></div><div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Create unassigned task</button></div></form>`,
+    "Create a task",
+    `<form class="form" id="taskForm"><div class="field full"><label>Task name</label><input name="title" required placeholder="e.g. Cut the opening 20 seconds"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What should the finished work include?"></textarea></div>${projects.length ? `<div class="field full"><label>Projects</label><div class="form-checks">${scopeOptions(projects, "projects")}</div></div>` : ""}${departments.length ? `<div class="field full"><label>Departments</label><div class="form-checks">${scopeOptions(departments, "departments")}</div>` : ""}<small class="quiet field full">Choose one or more projects and/or departments. New tasks start as Unassigned.</small>${departments.length ? "</div>" : ""}<div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Create unassigned task</button></div></form>`,
   );
   $("taskForm").onsubmit = (e) => {
     e.preventDefault();
     const form = new FormData(e.target as HTMLFormElement);
+    const selectedProjects = [
+      ...(e.target as HTMLFormElement).querySelectorAll<HTMLInputElement>(
+        '[name="projects"]:checked',
+      ),
+    ].map((input) => input.value);
+    const selectedDepartments = [
+      ...(e.target as HTMLFormElement).querySelectorAll<HTMLInputElement>(
+        '[name="departments"]:checked',
+      ),
+    ].map((input) => input.value);
+    if (!selectedProjects.length && !selectedDepartments.length) {
+      alert("Choose at least one project or department for this task.");
+      return;
+    }
     db.tasks.unshift({
       id: uid(),
       title: String(form.get("title") || "").trim(),
       description: String(form.get("description") || "").trim(),
-      project: String(form.get("project") || ""),
-      department: "",
+      projects: selectedProjects,
+      departments: selectedDepartments,
+      project: selectedProjects[0] || "",
+      department: selectedDepartments[0] || "",
       assignee: "",
       assigner: authProfile.id,
       status: "Unassigned",
@@ -1544,21 +1727,27 @@ function taskForm() {
 }
 function assignTask(id) {
   const task = db.tasks.find((item) => item.id === id);
-  if (!task || !canManageProjectTask(task)) return;
-  const projectMembers = db.members.filter(
+  if (!task || !canManageTask(task)) return;
+  const taskProjectNames = taskProjects(task);
+  const taskDepartmentNames = taskDepartments(task);
+  const eligibleMembers = db.members.filter(
     (member) =>
-      member.status === "Active" && member.projects.includes(task.project),
+      member.status === "Active" &&
+      (member.projects.some((project) => taskProjectNames.includes(project)) ||
+        deptsOf(member).some((department) =>
+          taskDepartmentNames.includes(department),
+        )),
   );
   openModal(
     task.assignee ? "Assign this task to someone else" : "Assign this task",
-    `<form class="form" id="assignTaskForm"><div class="field full"><label>Project</label><input value="${esc(task.project)}" disabled></div><div class="field full"><label>Assign to</label><select name="assignee" required><option value="">Choose an active project member</option>${projectMembers
+    `<form class="form" id="assignTaskForm"><div class="field full"><label>Projects and departments</label><input value="${esc(taskScopeLabel(task))}" disabled></div><div class="field full"><label>Assign to</label><select name="assignee" required><option value="">Choose an active member in these scopes</option>${eligibleMembers
       .map(
         (member) =>
           `<option value="${member.id}" ${member.id === task.assignee ? "selected" : ""}>${esc(member.name)}</option>`,
       )
       .join(
         "",
-      )}</select>${projectMembers.length ? "" : '<small class="quiet">Add an active member to this project before assigning its tasks.</small>'}</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime" ${projectMembers.length ? "" : "disabled"}>Assign task</button></div></form>`,
+      )}</select>${eligibleMembers.length ? "" : '<small class="quiet">Add an active member to at least one selected project or department before assigning this task.</small>'}</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime" ${eligibleMembers.length ? "" : "disabled"}>Assign task</button></div></form>`,
   );
   $("assignTaskForm").onsubmit = (event) => {
     event.preventDefault();
@@ -1566,7 +1755,7 @@ function assignTask(id) {
       new FormData(event.currentTarget as HTMLFormElement).get("assignee") ||
         "",
     );
-    if (!projectMembers.some((member) => member.id === assignee)) return;
+    if (!eligibleMembers.some((member) => member.id === assignee)) return;
     task.assignee = assignee;
     task.assigner = authProfile.id;
     task.status = "Pending";
@@ -1600,8 +1789,8 @@ function updateTask(id, key, value) {
   if (
     key === "status" &&
     (!t ||
-      (!canManageProjectTask(t) && t.assignee !== authProfile?.id) ||
-      (value === "Done" && !canManageProjectTask(t)))
+      (!canManageTask(t) && t.assignee !== authProfile?.id) ||
+      (value === "Done" && !canMarkTaskDone(t)))
   )
     return;
   if (t) {
@@ -1943,6 +2132,7 @@ $("memberProjectFilter").onchange = renderMembers;
 $("taskSearch").oninput = renderTasks;
 $("taskStatusFilter").onchange = renderTasks;
 $("taskProjectFilter").onchange = renderTasks;
+$("taskDepartmentFilter").onchange = renderTasks;
 $("calendarPrev").onclick = () => {
   calendarMonth = new Date(
     calendarMonth.getFullYear(),

@@ -911,19 +911,17 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
   .member {
-    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(
-        0,
-        1.2fr
-      ) 220px;
+    grid-template-columns:
+      minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.2fr)
+      220px;
   }
   .member > :nth-child(4) {
     display: none;
   }
   .task {
-    grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(
-        0,
-        0.8fr
-      ) minmax(0, 0.7fr) minmax(0, 0.9fr) 160px;
+    grid-template-columns:
+      minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 0.8fr)
+      minmax(0, 0.7fr) minmax(0, 0.9fr) 160px;
   }
   .task > :nth-child(4) {
     display: none;
