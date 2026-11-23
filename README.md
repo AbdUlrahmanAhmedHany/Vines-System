@@ -55,9 +55,10 @@ For local Worker development, install [uv](https://docs.astral.sh/uv/) and Node.
 
 - Email/password sign-in, password reset, invitation password setup, and profile matching use Supabase Auth. There is no public sign-up option.
 - The app reads and writes member, department, project, assignment, task, and progress-update data through Supabase. Database Row Level Security remains the authority for each operation.
+- Project tasks are created unassigned, then assigned by the system admin, President, Vice President, or that project's head. Assignees can update progress; only those leaders can mark a task Done.
 - New member profiles are created by the system admin and an invitation is sent from the server. After the invited member chooses a password, the server activates the matching pending profile. There is no public sign-up option.
 - Server-side invitation and activation routes require a protected `SUPABASE_SECRET_KEY`; it is never returned to the browser.
-- The Calendar view shows only tasks the current account may see and exports an `.ics` calendar file for import into Google Calendar or Apple Calendar. It is a manual export, not an automatic two-way sync.
+- The Calendar view shows only tasks the current account may see and exports an `.ics` calendar file for import into Google Calendar or Apple Calendar. It is a manual export, not an automatic sync.
 - The database permissions and invitation flow still need to be checked against the connected Supabase project before the club uses the site.
 - Google sign-in is not configured.
 - The member import preview accepts CSV files (including CSV exported from Excel); it does not import `.xlsx` workbooks directly.
@@ -70,7 +71,7 @@ For local development, set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and (for 
 
 ## Supabase reference files
 
-The current database setup instructions are in [shared-app/README.md](shared-app/README.md). For an existing Supabase project, use the current `shared-app/schema.sql` and then `shared-app/matrix-roles-update.sql`. Keep `sources/` reference material out of this repository.
+The current database setup instructions are in [shared-app/README.md](shared-app/README.md). For an existing Supabase project, run `shared-app/schema.sql`, `shared-app/matrix-roles-update.sql`, then `shared-app/task-assignment-workflow.sql`. Keep `sources/` reference material out of this repository.
 
 ## Hosting
 

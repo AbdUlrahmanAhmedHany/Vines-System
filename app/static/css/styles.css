@@ -515,6 +515,18 @@ textarea:focus {
   font-size: 13px;
   font-weight: 750;
 }
+.task-title-button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+.task-title-button:hover {
+  color: var(--leaf);
+  text-decoration: underline;
+}
 .row-sub {
   font-size: 11px;
   color: var(--muted);
@@ -551,6 +563,14 @@ textarea:focus {
   white-space: nowrap;
 }
 .badge.todo {
+  background: #f3f1e9;
+  color: #86764f;
+}
+.badge.unassigned {
+  background: #fff0e9;
+  color: #a45132;
+}
+.badge.pending {
   background: #f3f1e9;
   color: #86764f;
 }
@@ -682,7 +702,12 @@ textarea:focus {
 .task {
   grid-template-columns:
     minmax(180px, 1.5fr) minmax(110px, 0.9fr) minmax(95px, 0.8fr)
-    minmax(90px, 0.7fr) minmax(112px, 0.8fr) minmax(120px, 0.9fr) auto;
+    minmax(90px, 0.7fr) minmax(112px, 0.8fr) minmax(120px, 0.9fr) 175px;
+}
+.task > :last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .member.header,
 .task.header {
@@ -886,13 +911,19 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
   .member {
-    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.2fr) 220px;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(
+        0,
+        1.2fr
+      ) 220px;
   }
   .member > :nth-child(4) {
     display: none;
   }
   .task {
-    grid-template-columns: 1.4fr 0.9fr 0.8fr 0.7fr 0.9fr auto;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(
+        0,
+        0.8fr
+      ) minmax(0, 0.7fr) minmax(0, 0.9fr) 160px;
   }
   .task > :nth-child(4) {
     display: none;
