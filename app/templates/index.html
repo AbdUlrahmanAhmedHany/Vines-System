@@ -220,9 +220,7 @@
                 id="memberCsv"
                 type="file"
                 accept=".csv,text/csv"
-              /><button class="btn lime" id="addMemberBtn">
-                ＋ Add member
-              </button>
+              />
             </div>
           </div>
           <div class="filters">
@@ -356,7 +354,7 @@
                 Department heads coach members, give feedback, balance
                 workloads, keep quality high, and place members on projects.
               </p>
-              <div class="form">
+              <div class="form structure-form">
                 <div class="field">
                   <label>New department</label
                   ><input id="deptName" placeholder="e.g. Videography" />
@@ -385,7 +383,7 @@
                 Project leads split the work into tasks, assign owners, and keep
                 the team on schedule.
               </p>
-              <div class="form">
+              <div class="form structure-form">
                 <div class="field">
                   <label>New project</label
                   ><input id="projectName" placeholder="e.g. Reels" />
@@ -402,6 +400,14 @@
               </div>
               <div class="structure-list spaced-15" id="projectList"></div>
             </div>
+            <aside
+              class="detail-panel"
+              id="structureDetail"
+              aria-live="polite"
+              hidden
+            >
+              <div class="detail-inner" id="structureDetailBody"></div>
+            </aside>
           </div>
           <div class="card spaced-14">
             <div class="card-head">

@@ -134,6 +134,10 @@ let db: any = structuredClone(starter),
   role = "",
   selectedPerson = "",
   structureMode = "structure",
+  structureSelection: { kind: string; name: string } | null = null,
+  structureDetailKey = "",
+  structureDetailTimer = 0,
+  animateStructureClose = false,
   calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   supabase: SupabaseClient | null = null,
   authUser: any = null,
@@ -812,6 +816,27 @@ async function persistChanges(before: any, after: any) {
     }
   }
 
+  const removedTasks = before.tasks.filter(
+    (old: any) => !after.tasks.some((task: any) => task.id === old.id),
+  );
+  if (removedTasks.length && !canDeleteTask())
+    throw new Error(
+      "Only the system admin, President or Vice President can delete tasks.",
+    );
+  for (const task of removedTasks) {
+    // Project links, department links and progress updates go with the task.
+    const { data, error } = await supabase
+      .from("tasks")
+      .delete()
+      .eq("id", task.id)
+      .select("id");
+    if (error) throw new Error(`tasks: ${error.message}`);
+    if (!data?.length)
+      throw new Error(
+        `tasks: "${task.title}" could not be deleted. It may already be gone or you may not have permission.`,
+      );
+  }
+
   const changedTasks = after.tasks.filter((task: any) => {
     const old = before.tasks.find((row: any) => row.id === task.id);
     return (
@@ -995,7 +1020,7 @@ function memberRoles(m) {
     .map((department) => `${department.name} Head`);
   const projectHeadLabels = db.projects
     .filter((project) => project.lead === m.id)
-    .map((project) => `${project.name} Project Head`);
+    .map((project) => `${project.name} Head`);
   const labels = [...(m.positionNames || []), legacyRole, m.extraRole].filter(
     (position) => position && position !== "Member",
   );
@@ -1013,7 +1038,7 @@ function memberRoles(m) {
     while (labels.includes("Project Head"))
       labels.splice(labels.indexOf("Project Head"), 1);
   } else if (legacyRole === "Project Head" && m.headScope) {
-    labels.push(`${m.headScope} Project Head`);
+    labels.push(`${m.headScope} Head`);
     while (labels.includes("Project Head"))
       labels.splice(labels.indexOf("Project Head"), 1);
   }
@@ -1155,6 +1180,10 @@ function canMarkTaskDone(task) {
     ),
   );
 }
+// Matches the database policy tasks_admin_delete (system admin, President, VP).
+function canDeleteTask() {
+  return isAdmin() || isExecutive();
+}
 function canCreateTask() {
   return (
     isAdmin() ||
@@ -1168,8 +1197,10 @@ function allowedProjects() {
 }
 function show(view) {
   if (view === "administration" && !isAdmin()) view = "home";
+  const previousStructureMode = structureMode;
   if (["departments", "projects"].includes(view)) structureMode = view;
   else if (view === "structure") structureMode = "structure";
+  if (structureMode !== previousStructureMode) structureSelection = null;
   const activeView = ["departments", "projects"].includes(view)
     ? "structure"
     : view;
@@ -1228,7 +1259,6 @@ function render() {
     '<option value="">Choose a member</option>' + members;
   const leader =
     SHARED_WRITES_ENABLED && (isAdmin() || isExecutive() || isHeadRole());
-  $("addMemberBtn").classList.toggle("hidden", !leader || !isAdmin());
   $("importMembersBtn").classList.toggle("hidden", !leader || !isAdmin());
   $("addDept")
     .closest(".form")
@@ -1342,7 +1372,7 @@ function renderMembers() {
                 .map((r) => `<span class="badge role">${esc(r)}</span>`)
                 .join(
                   " ",
-                )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button><button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`,
+                )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button><button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}${canRemoveMember(m) ? `<button class="btn danger small" data-action="remove-member" data-id="${m.id}">Remove</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`,
           )
           .join("")
       : '<div class="empty"><strong>No members in this view yet.</strong>Add your team one department at a time.</div>');
@@ -1386,7 +1416,7 @@ function renderTasks() {
               canUpdateProgress &&
               t.assignee &&
               (canMarkDone || t.status !== "Done");
-            return `<div class="task"><div><div class="row-title">${taskTitle}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` · assigned by ${esc(personName(t.assigner))}` : ""}</div>${t.update ? `<div class="progress-update">↳ ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(taskScopeLabel(t))}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManage ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">＋ Update</button>` : ""}</div></div>`;
+            return `<div class="task"><div><div class="row-title">${taskTitle}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` · assigned by ${esc(personName(t.assigner))}` : ""}</div>${t.update ? `<div class="progress-update">↳ ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(taskScopeLabel(t))}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManage ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">＋ Update</button>${canDeleteTask() ? `<button class="btn danger small" data-action="delete-task" data-id="${t.id}">Delete</button>` : ""}` : ""}</div></div>`;
           })
           .join("")
       : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
@@ -1504,10 +1534,14 @@ function renderStructure() {
       : db.departments.filter((d) =>
           isHeadRole() ? d.head === scope() : true,
         );
+  const selectedClass = (kind: string, name: string) =>
+    structureSelection?.kind === kind && structureSelection.name === name
+      ? " selected"
+      : "";
   $("deptList").innerHTML = dlist
     .map(
       (d) =>
-        `<div class="row"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${db.members.filter((m) => deptsOf(m).includes(d.name)).length} people · Head: ${esc(personName(d.head))}</div></div></div>`,
+        `<div class="row clickable${selectedClass("dept", d.name)}" role="button" tabindex="0" data-kind="dept" data-name="${esc(d.name)}"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${db.members.filter((m) => deptsOf(m).includes(d.name)).length} people · Head: ${esc(personName(d.head))}</div></div><span class="row-chevron" aria-hidden="true">›</span></div>`,
     )
     .join("");
   let plist =
@@ -1521,9 +1555,125 @@ function renderStructure() {
   $("projectList").innerHTML = plist
     .map(
       (p) =>
-        `<div class="row"><div><div class="row-title">${esc(p.name)}</div><div class="row-sub">${db.members.filter((m) => m.projects.includes(p.name)).length} people · Lead: ${esc(personName(p.lead))}</div></div></div>`,
+        `<div class="row clickable${selectedClass("project", p.name)}" role="button" tabindex="0" data-kind="project" data-name="${esc(p.name)}"><div><div class="row-title">${esc(p.name)}</div><div class="row-sub">${db.members.filter((m) => m.projects.includes(p.name)).length} people · Lead: ${esc(personName(p.lead))}</div></div><span class="row-chevron" aria-hidden="true">›</span></div>`,
     )
     .join("");
+  renderStructureDetail();
+}
+function structureEntity(kind: string, name: string) {
+  if (kind === "dept") {
+    const d = db.departments.find((x) => x.name === name);
+    if (!d) return null;
+    return {
+      title: d.name,
+      icon: "🌱",
+      iconClass: "mint",
+      leaderLabel: "Head",
+      description: d.description || "",
+      leader: person(d.head),
+      members: db.members.filter((m) => deptsOf(m).includes(d.name)),
+    };
+  }
+  const p = db.projects.find((x) => x.name === name);
+  if (!p) return null;
+  return {
+    title: p.name,
+    icon: "🎬",
+    iconClass: "coral",
+    leaderLabel: "Lead",
+    description: p.description || "",
+    leader: person(p.lead),
+    members: db.members.filter((m) => m.projects.includes(p.name)),
+  };
+}
+function structureDetailHtml(kind: string, name: string, withClose: boolean) {
+  const e = structureEntity(kind, name);
+  if (!e) return "";
+  const personRow = (m, i: number) =>
+    `<div class="detail-person"><div class="person"><span class="avatar c${(i % 4) + 1}">${esc(initials(m.name))}</span><div><div class="row-title">${esc(m.name)}</div><div class="row-sub">${esc(m.email || "Club member")}</div></div></div>${m.id === e.leader?.id ? `<span class="badge role">${e.leaderLabel}</span>` : ""}</div>`;
+  const head = withClose
+    ? `<div class="detail-head"><div class="card-title"><span class="card-icon ${e.iconClass}">${e.icon}</span><h3>${esc(e.title)}</h3></div><button type="button" class="detail-close" id="structureDetailClose" aria-label="Close details">×</button></div>`
+    : "";
+  return `${head}${e.description ? `<p class="quiet">${esc(e.description)}</p>` : ""}<div class="detail-label">${e.leaderLabel}</div>${
+    e.leader
+      ? personRow(e.leader, 0)
+      : `<div class="quiet">No ${e.leaderLabel.toLowerCase()} assigned yet.</div>`
+  }<div class="detail-label">Members · ${e.members.length}</div>${
+    e.members.length
+      ? e.members.map(personRow).join("")
+      : '<div class="quiet">No members yet.</div>'
+  }`;
+}
+function renderStructureDetail() {
+  const panel = $("structureDetail");
+  const sel = structureSelection;
+  const fitsMode =
+    !!sel &&
+    ((structureMode === "departments" && sel.kind === "dept") ||
+      (structureMode === "projects" && sel.kind === "project"));
+  const exists = fitsMode && !!structureEntity(sel.kind, sel.name);
+  const body: HTMLElement = $("structureDetailBody");
+  const play = (cls: string) => {
+    body.classList.remove("detail-enter", "detail-leave");
+    void body.offsetWidth; // restart the animation even if the class was just removed
+    body.classList.add(cls);
+  };
+  window.clearTimeout(structureDetailTimer);
+  if (!exists) {
+    if (sel) structureSelection = null;
+    const slideOut = animateStructureClose && !panel.hidden;
+    animateStructureClose = false;
+    structureDetailKey = "";
+    if (slideOut) {
+      play("detail-leave");
+      structureDetailTimer = window.setTimeout(() => {
+        panel.hidden = true;
+        body.innerHTML = "";
+        body.classList.remove("detail-leave");
+      }, 160);
+    } else {
+      panel.hidden = true;
+      body.innerHTML = "";
+      body.classList.remove("detail-enter", "detail-leave");
+    }
+    return;
+  }
+  // Animate only when a different item opens or the panel was closed, so a
+  // background re-render (for example after a save) does not replay it.
+  const key = `${sel.kind}:${sel.name}`;
+  const opening = key !== structureDetailKey || panel.hidden;
+  structureDetailKey = key;
+  body.innerHTML = structureDetailHtml(sel.kind, sel.name, true);
+  panel.hidden = false;
+  if (opening) {
+    body
+      .querySelectorAll<HTMLElement>(".detail-person")
+      .forEach((row, i) => row.style.setProperty("--i", String(i)));
+    play("detail-enter");
+  } else {
+    body.classList.remove("detail-enter", "detail-leave");
+  }
+}
+function selectStructureItem(kind: string, name: string) {
+  const sideBySide =
+    structureMode !== "structure" &&
+    !window.matchMedia("(max-width: 680px)").matches;
+  if (!sideBySide) {
+    // Both cards (or a phone) leave no empty column, so use the modal.
+    const e = structureEntity(kind, name);
+    if (e) openModal(e.title, structureDetailHtml(kind, name, false));
+    return;
+  }
+  const same =
+    structureSelection?.kind === kind && structureSelection.name === name;
+  structureSelection = same ? null : { kind, name };
+  animateStructureClose = same;
+  renderStructure();
+  // Keep keyboard focus on the row after the list re-renders.
+  const list = $(kind === "dept" ? "deptList" : "projectList");
+  [...list.querySelectorAll(".row.clickable")]
+    .find((row: HTMLElement) => row.dataset.name === name)
+    ?.focus();
 }
 function openModal(title, body) {
   $("modalTitle").textContent = title;
@@ -1784,6 +1934,19 @@ function addUpdate(id) {
     save();
   };
 }
+function deleteTask(id) {
+  const t = db.tasks.find((task) => task.id === id);
+  if (!t || !canDeleteTask()) return;
+  openModal(
+    "Delete task",
+    `<p>Delete <strong>${esc(t.title)}</strong>? Its progress updates are deleted with it. This cannot be undone.</p><div class="form-actions" style="margin-top:16px"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button type="button" class="btn danger" id="confirmDeleteTask">Delete task</button></div>`,
+  );
+  $("confirmDeleteTask").onclick = () => {
+    db.tasks = db.tasks.filter((task) => task.id !== id);
+    closeModal();
+    save();
+  };
+}
 function updateTask(id, key, value) {
   let t = db.tasks.find((t) => t.id === id);
   if (
@@ -1895,6 +2058,80 @@ function assignProjects(id) {
     ];
     closeModal();
     save();
+  };
+}
+// Only the system admin, and never themselves or another system admin. The
+// server enforces the same rules.
+function canRemoveMember(m) {
+  return (
+    SHARED_WRITES_ENABLED &&
+    isAdmin() &&
+    m.id !== authProfile?.id &&
+    !m.isClubAdmin
+  );
+}
+function removeMember(id: string) {
+  const m = person(id);
+  if (!m || !canRemoveMember(m)) return;
+  const assigned = db.tasks.filter((t) => t.assignee === id).length;
+  const headed =
+    db.departments.filter((d) => d.head === id).length +
+    db.projects.filter((p) => p.lead === id).length;
+  const items = [
+    "Their profile and Supabase login are deleted. They can no longer sign in.",
+    "They are taken out of every department and project.",
+    assigned
+      ? `${assigned} task${assigned === 1 ? "" : "s"} assigned to them ${assigned === 1 ? "is" : "are"} deleted, with ${assigned === 1 ? "its" : "their"} progress updates.`
+      : "",
+    headed
+      ? `${headed} department${headed === 1 ? "" : "s"} or project${headed === 1 ? "" : "s"} they lead will have no head.`
+      : "",
+  ].filter(Boolean);
+  openModal(
+    "Remove member",
+    `<p>Remove <strong>${esc(m.name)}</strong> from the club completely?</p><ul style="padding-left:18px;margin:10px 0">${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul><p><strong>This cannot be undone.</strong></p><div class="note" id="removeMemberError" role="alert" hidden></div><div class="form-actions" style="margin-top:16px"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button type="button" class="btn danger" id="confirmRemoveMember">Remove member</button></div>`,
+  );
+  const confirm = $("confirmRemoveMember");
+  confirm.onclick = async () => {
+    const problem = $("removeMemberError");
+    confirm.disabled = true;
+    confirm.textContent = "Removing…";
+    problem.hidden = true;
+    let removed = false;
+    try {
+      await saveQueue; // let any pending save finish first
+      const { data } = await supabase!.auth.getSession();
+      const response = await fetch("/api/remove-member", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + (data.session?.access_token || ""),
+        },
+        body: JSON.stringify({ memberId: id }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok)
+        throw new Error(result.error || "Could not remove this member.");
+      removed = true;
+    } catch (error) {
+      problem.textContent =
+        error instanceof Error
+          ? error.message
+          : "Could not remove this member.";
+      problem.hidden = false;
+      confirm.disabled = false;
+      confirm.textContent = "Try again";
+    }
+    // Reload either way: a partly finished removal changes what is shown.
+    try {
+      db = await loadSharedWorkspace();
+      syncedDb = structuredClone(db);
+      render();
+    } catch {
+      await supabase?.auth.signOut();
+      return;
+    }
+    if (removed) closeModal();
   };
 }
 function toggleSystemAccess(id) {
@@ -2098,6 +2335,9 @@ document.addEventListener("click", (event) => {
     case "resend-invitation":
       void resendMemberInvitation(target.dataset.id || "");
       break;
+    case "remove-member":
+      removeMember(target.dataset.id || "");
+      break;
     case "toggle-system-access":
       toggleSystemAccess(target.dataset.id || "");
       break;
@@ -2110,6 +2350,9 @@ document.addEventListener("click", (event) => {
     case "assign-task":
       assignTask(target.dataset.id || "");
       break;
+    case "delete-task":
+      deleteTask(target.dataset.id || "");
+      break;
     case "edit-lead":
       editLead(target.dataset.type || "", target.dataset.name || "");
       break;
@@ -2120,7 +2363,6 @@ document.addEventListener("change", (event) => {
   if (target.matches("[data-task-status]"))
     updateTask(target.dataset.taskStatus || "", "status", target.value);
 });
-$("addMemberBtn").onclick = () => memberForm();
 $("addTaskBtn").onclick = taskForm;
 $("closeModal").onclick = closeModal;
 $("modal").onclick = (e) => {
@@ -2185,6 +2427,29 @@ $("addProject").onclick = () => {
     save();
   }
 };
+for (const listId of ["deptList", "projectList"]) {
+  const list = $(listId);
+  const pick = (target: EventTarget | null) => {
+    const row = (target as HTMLElement | null)?.closest<HTMLElement>(
+      ".row.clickable",
+    );
+    if (row) selectStructureItem(row.dataset.kind, row.dataset.name);
+  };
+  list.addEventListener("click", (e: MouseEvent) => pick(e.target));
+  list.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      pick(e.target);
+    }
+  });
+}
+$("structureDetail").addEventListener("click", (e: MouseEvent) => {
+  if ((e.target as HTMLElement).closest("#structureDetailClose")) {
+    structureSelection = null;
+    animateStructureClose = true;
+    renderStructure();
+  }
+});
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
 });

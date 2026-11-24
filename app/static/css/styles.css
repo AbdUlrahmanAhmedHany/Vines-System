@@ -787,6 +787,139 @@ textarea:focus {
   justify-content: flex-end;
   gap: 8px;
 }
+/* Departments & Projects: line the Add button up under the dropdown.
+   The box is as wide as the dropdown (.select max-width), so the button's
+   right edge matches the dropdown's right edge. */
+.structure-form .form-actions {
+  grid-column: 2;
+  justify-self: start;
+  width: 100%;
+  max-width: 200px;
+}
+/* Clickable department / project rows */
+.row.clickable {
+  cursor: pointer;
+  padding-left: 10px;
+  padding-right: 10px;
+  margin: 0 -10px;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+.row.clickable:hover {
+  background: #fafbf8;
+}
+.row.clickable.selected {
+  background: #f1f7ec;
+}
+.row.clickable:focus-visible {
+  outline: 2px solid var(--leaf);
+  outline-offset: -2px;
+}
+.row-chevron {
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+/* Side panel that fills the empty right column. It is absolutely positioned
+   inside its grid cell, so it adds no height and never pushes the layout. */
+.detail-panel {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  min-height: 0;
+}
+.detail-panel[hidden] {
+  display: none;
+}
+.detail-inner {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 19px 20px;
+  box-shadow: var(--shadow);
+}
+/* Panel motion: slides in from the right, people fade up one after another,
+   and it slides out when closed. Replayed from app.ts when the selection changes. */
+@keyframes detail-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes detail-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+@keyframes detail-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.detail-inner.detail-enter {
+  animation: detail-in 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.detail-inner.detail-leave {
+  animation: detail-out 0.16s ease-in both;
+}
+.detail-inner.detail-enter .detail-person {
+  animation: detail-item-in 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(90ms + var(--i, 0) * 35ms);
+}
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.detail-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.detail-close:hover {
+  background: #f0f4ec;
+}
+.detail-label {
+  font-size: 11px;
+  font-weight: 780;
+  color: #56685b;
+  margin: 16px 0 4px;
+}
+.detail-person {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid #edf0eb;
+}
+.detail-label + .detail-person {
+  border-top: 0;
+}
 .form-checks {
   padding: 8px 0;
   display: flex;
@@ -1085,11 +1218,16 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
   .field.full,
-  .form-actions {
+  .form-actions,
+  .structure-form .form-actions {
     grid-column: auto;
   }
   .section-card {
     grid-template-columns: 1fr;
+  }
+  /* On phones there is no empty column; details open in the modal instead. */
+  .detail-panel {
+    display: none;
   }
   .filters input {
     width: 100%;
@@ -1112,6 +1250,9 @@ textarea:focus {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  .detail-inner.detail-enter .detail-person {
+    animation-delay: 0s !important;
   }
 }
 

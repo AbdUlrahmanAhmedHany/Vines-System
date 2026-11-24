@@ -55,9 +55,10 @@ For local Worker development, install [uv](https://docs.astral.sh/uv/) and Node.
 
 - Email/password sign-in, password reset, invitation password setup, and profile matching use Supabase Auth. There is no public sign-up option.
 - The app reads and writes member, department, project, assignment, task, and progress-update data through Supabase. Database Row Level Security remains the authority for each operation.
-- Tasks can belong to multiple projects, multiple departments, or both. They start unassigned, then a global leader or head in scope assigns an active member. Assignees can update progress; only the system admin, President, Vice President, or a linked project head can mark a task Done.
+- Tasks can belong to multiple projects, multiple departments, or both. They start unassigned, then a global leader or head in scope assigns an active member. Assignees can update progress; only the system admin, President, Vice President, or a linked project head can mark a task Done. The system admin, President and Vice President can also delete tasks (this matches the `tasks_admin_delete` database policy; heads cannot).
 - New member profiles are created by the system admin and an invitation is sent from the server. After the invited member chooses a password, the server activates the matching pending profile. There is no public sign-up option.
-- Server-side invitation and activation routes require a protected `SUPABASE_SECRET_KEY`; it is never returned to the browser.
+- Server-side invitation, activation and member-removal routes require a protected `SUPABASE_SECRET_KEY`; it is never returned to the browser.
+- Only the system admin can remove a member (Members page, **Remove**). It deletes their Supabase login and profile, deletes tasks assigned to them and their progress updates, and hands tasks, project allocations and invitations they created to the admin. It refuses to remove the admin themselves or any other system admin.
 - The Calendar view shows only tasks the current account may see and exports an `.ics` calendar file for import into Google Calendar or Apple Calendar. It is a manual export, not an automatic sync.
 - The database permissions and invitation flow still need to be checked against the connected Supabase project before the club uses the site.
 - Google sign-in is not configured.

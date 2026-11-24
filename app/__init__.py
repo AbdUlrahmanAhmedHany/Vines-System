@@ -5,6 +5,7 @@ import json
 import hashlib
 import os
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -219,6 +220,92 @@ def create_app() -> Flask:
                 )
                 return jsonify(error="Supabase could not send the invitation. Check Auth email delivery settings."), 502
             return jsonify(ok=True, email=email), 202
+        except RuntimeError as error:
+            return jsonify(error=str(error)), 503
+
+    @app.post("/api/remove-member")
+    def remove_member():
+        """Remove a member from the club: login, profile and what depends on it.
+
+        Only the active system admin may call this. It cannot remove the admin
+        themselves or any other system admin.
+        """
+        secret = worker_setting("SUPABASE_SECRET_KEY")
+        if not secret:
+            return jsonify(error="Member removal is not configured on the server."), 503
+        try:
+            token, user = authenticated_user(secret)
+            if not token:
+                return jsonify(error="Sign in again before removing a member."), 401
+            try:
+                member_id = str(uuid.UUID(str((request.get_json(silent=True) or {}).get("memberId", "")).strip()))
+            except ValueError:
+                return jsonify(error="Choose a member to remove."), 400
+
+            admin_email = str(user["email"]).lower()
+            query = urlencode({"select": "id,email,is_club_admin,status", "email": f"ilike.{admin_email}", "limit": "2"})
+            status, profiles = upstream(f"rest/v1/members?{query}", "GET", secret, secret)
+            if status != 200 or not isinstance(profiles, list):
+                return jsonify(error="Could not verify the member profile."), 502
+            admins = [
+                profile for profile in profiles
+                if str(profile.get("email", "")).lower() == admin_email
+                and profile.get("is_club_admin") is True
+                and profile.get("status") == "Active"
+            ]
+            if not admins:
+                return jsonify(error="Only the active system admin can remove members."), 403
+            admin_id = admins[0]["id"]
+
+            query = urlencode({"select": "id,email,is_club_admin", "id": f"eq.{member_id}", "limit": "1"})
+            status, targets = upstream(f"rest/v1/members?{query}", "GET", secret, secret)
+            if status != 200 or not isinstance(targets, list):
+                return jsonify(error="Could not verify the member to remove."), 502
+            if not targets:
+                return jsonify(error="This member no longer exists."), 404
+            target = targets[0]
+            if target["id"] == admin_id:
+                return jsonify(error="You cannot remove yourself."), 409
+            if target.get("is_club_admin") is True:
+                return jsonify(error="Revoke this member's system access before removing them."), 409
+
+            # 1. Delete the login first so the person loses access straight away.
+            email = str(target.get("email", "")).strip().lower()
+            auth_id = None
+            for page in range(1, 21):
+                status, listing = upstream(
+                    f"auth/v1/admin/users?page={page}&per_page=200", "GET", secret, secret
+                )
+                if status != 200 or not isinstance(listing, dict):
+                    return jsonify(error="Could not look up this member's login. Nothing was removed."), 502
+                users = listing.get("users") or []
+                match = next((u for u in users if str(u.get("email", "")).lower() == email), None)
+                if match:
+                    auth_id = match.get("id")
+                    break
+                if len(users) < 200:
+                    break
+            if auth_id:
+                status, _ = upstream(f"auth/v1/admin/users/{auth_id}", "DELETE", secret, secret)
+                if status not in (200, 204, 404):
+                    return jsonify(error="Could not delete this member's login. Nothing was removed."), 502
+
+            # 2. Clear what would block deleting the profile. Their own tasks and
+            #    updates are deleted; records they created for others move to the admin.
+            by_member = lambda column: urlencode({column: f"eq.{member_id}"})
+            steps = [
+                ("tasks assigned to them", "DELETE", f"rest/v1/tasks?{by_member('assignee_id')}", None),
+                ("their progress updates", "DELETE", f"rest/v1/task_updates?{by_member('author_id')}", None),
+                ("tasks they assigned", "PATCH", f"rest/v1/tasks?{by_member('assigned_by')}", {"assigned_by": admin_id}),
+                ("project allocations they made", "PATCH", f"rest/v1/project_assignments?{by_member('allocated_by')}", {"allocated_by": admin_id}),
+                ("invitations they created", "PATCH", f"rest/v1/invitations?{by_member('created_by')}", {"created_by": admin_id}),
+                ("their profile", "DELETE", f"rest/v1/members?{by_member('id')}", None),
+            ]
+            for label, method, path, body in steps:
+                status, _ = upstream(path, method, secret, secret, body)
+                if status not in (200, 204):
+                    return jsonify(error=f"Could not remove {label}. Their login was already deleted; try removing them again."), 502
+            return jsonify(ok=True), 200
         except RuntimeError as error:
             return jsonify(error=str(error)), 503
 
