@@ -1690,3 +1690,33 @@ textarea:focus {
   flex-wrap: wrap;
   gap: 8px;
 }
+.pf-phone {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 10px;
+}
+.pf-phone select,
+.pf-phone input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid #cdd6cb;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+}
+.pw-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+.pw-form .pf-field input {
+  min-height: 44px;
+}
+.pw-note {
+  min-height: 20px;
+  font-size: 13px;
+}
+.pw-note.error {
+  color: #a6372d;
+}

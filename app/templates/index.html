@@ -308,8 +308,40 @@
               </div>
               <div class="card">
                 <h3>Sign-in</h3>
-                <button class="btn ghost small" id="profileReset" type="button">
-                  Email me a password reset link
+                <form class="pw-form" id="passwordChangeForm" novalidate>
+                  <div class="pf-field">
+                    <label for="pwCurrent">Current password</label>
+                    <input
+                      id="pwCurrent"
+                      type="password"
+                      autocomplete="current-password"
+                    />
+                  </div>
+                  <div class="pf-field">
+                    <label for="pwNew">New password</label>
+                    <input
+                      id="pwNew"
+                      type="password"
+                      autocomplete="new-password"
+                      minlength="8"
+                    />
+                  </div>
+                  <div class="pf-field">
+                    <label for="pwConfirm">Confirm new password</label>
+                    <input
+                      id="pwConfirm"
+                      type="password"
+                      autocomplete="new-password"
+                      minlength="8"
+                    />
+                  </div>
+                  <div class="pw-note" id="pwNote" role="status"></div>
+                  <button class="btn lime small" type="submit" id="pwSave">
+                    Change password
+                  </button>
+                </form>
+                <button class="auth-link" id="profileReset" type="button">
+                  Forgot your current password? Email me a reset link
                 </button>
                 <div class="quiet" id="profileResetNote" role="status"></div>
               </div>

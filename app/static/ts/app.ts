@@ -183,12 +183,42 @@ function reveal(which: "gate" | "profile" | "app") {
 const FACULTIES = [
   "Engineering",
   "Computer Science",
-  "Mass Communication",
-  "Arts and Design",
-  "Business",
-  "Science",
-  "Other",
+  "Business Informatics",
+  "Digital Arts and Design",
 ];
+// Phone numbers default to Egypt. Stored as +<country code><number>.
+const COUNTRIES: { name: string; dial: string }[] = [
+  { name: "Egypt", dial: "20" },
+  { name: "Saudi Arabia", dial: "966" },
+  { name: "United Arab Emirates", dial: "971" },
+  { name: "Kuwait", dial: "965" },
+  { name: "Qatar", dial: "974" },
+  { name: "Jordan", dial: "962" },
+  { name: "Libya", dial: "218" },
+  { name: "Sudan", dial: "249" },
+  { name: "Germany", dial: "49" },
+  { name: "United Kingdom", dial: "44" },
+  { name: "United States / Canada", dial: "1" },
+];
+function splitPhone(phone: string) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  const match = [...COUNTRIES]
+    .sort((x, y) => y.dial.length - x.dial.length)
+    .find((c) => digits.startsWith(c.dial));
+  return match
+    ? { dial: match.dial, number: digits.slice(match.dial.length) }
+    : { dial: "20", number: digits };
+}
+// Returns the +E.164 number, "" when empty, or null when it is not valid.
+function normalizePhone(dial: string, raw: string): string | null {
+  let digits = String(raw || "").replace(/[\s\-().]/g, "");
+  if (!digits) return "";
+  if (!/^\d+$/.test(digits)) return null;
+  digits = digits.replace(/^0+/, "");
+  if (dial === "20")
+    return /^1[0125]\d{8}$/.test(digits) ? "+20" + digits : null;
+  return digits.length >= 6 && digits.length <= 12 ? "+" + dial + digits : null;
+}
 const YEAR_NAMES = ["1st", "2nd", "3rd", "4th", "5th"];
 function yearsFor(faculty: string) {
   return faculty === "Engineering" ? 5 : 4;
@@ -212,6 +242,7 @@ function setAvatar(el: HTMLElement, path: string, name: string) {
 function profileMissing(profile: any) {
   const missing: string[] = [];
   if (!profile?.avatar_path) missing.push("profile photo");
+  if (!profile?.phone) missing.push("phone number");
   if (!profile?.faculty) missing.push("faculty");
   if (!profile?.study_year) missing.push("year of study");
   return missing;
@@ -269,6 +300,7 @@ function mountProfileForm(
   options: { submitLabel: string; stacked: boolean; onSaved: () => void },
 ) {
   const names = splitName(profile.name);
+  const phoneParts = splitPhone(profile.phone || "");
   const state = {
     blob: null as Blob | null,
     path: profile.avatar_path || "",
@@ -299,6 +331,12 @@ function mountProfileForm(
     <div class="pf-field"><label for="${prefix}Email">Email</label>
       <input id="${prefix}Email" type="email" readonly value="${esc(profile.email)}" />
       <div class="pf-hint">Your email is tied to your invitation and can only be changed by the system admin.</div></div>
+    <div class="pf-field"><label for="${prefix}Phone">Phone number</label>
+      <div class="pf-phone">
+        <select id="${prefix}Dial" aria-label="Country code">${COUNTRIES.map((c) => `<option value="${c.dial}" ${c.dial === phoneParts.dial ? "selected" : ""}>${esc(c.name)} (+${c.dial})</option>`).join("")}</select>
+        <input id="${prefix}Phone" type="tel" inputmode="tel" autocomplete="tel-national" maxlength="20" value="${esc(phoneParts.number)}" placeholder="10 1234 5678" />
+      </div>
+      <div class="pf-hint">Egypt is selected by default. Club leaders and teammates on your projects can see it.</div></div>
     <div class="pf-row">
       <div class="pf-field"><label for="${prefix}Faculty">Faculty</label>
         <select id="${prefix}Faculty"><option value="">Choose your faculty</option>${options_(facultyOptions, profile.faculty || "")}</select></div>
@@ -374,7 +412,15 @@ function mountProfileForm(
     const last = q("Last").value.trim();
     const faculty = q("Faculty").value;
     const year = q("Year").value ? Number(q("Year").value) : null;
+    const phone = normalizePhone(q("Dial").value, q("Phone").value);
     q("Error").textContent = "";
+    if (phone === null) {
+      q("Error").textContent =
+        q("Dial").value === "20"
+          ? "Enter an Egyptian mobile number, like 010 1234 5678."
+          : "Enter a valid phone number.";
+      return;
+    }
     if (!first) {
       q("Error").textContent = "Enter your first name.";
       return;
@@ -390,10 +436,11 @@ function mountProfileForm(
         name: `${first} ${last}`.trim(),
         faculty,
         year,
+        phone,
         blob: state.blob,
         path: state.path,
         previous: state.previous,
-        status: faculty && year ? "Complete" : "Pending",
+        status: faculty && year && phone ? "Complete" : "Pending",
       });
       options.onSaved();
     } catch (error) {
@@ -412,6 +459,7 @@ async function saveOwnProfile(input: {
   name: string;
   faculty: string;
   year: number | null;
+  phone: string;
   blob: Blob | null;
   path: string;
   previous: string;
@@ -435,6 +483,7 @@ async function saveOwnProfile(input: {
     p_study_year: input.year,
     p_avatar_path: path || null,
     p_profile_status: input.status,
+    p_phone: input.phone || null,
   });
   if (error) {
     if (input.blob) await supabase.storage.from("avatars").remove([path]);
@@ -452,20 +501,26 @@ async function saveOwnProfile(input: {
     study_year: input.year,
     avatar_path: path || null,
     profile_status: input.status,
+    phone: input.phone || null,
   });
 }
 // Keep the signed-in profile and the loaded member list in step with the save.
 function applyOwnProfile(fields: any) {
   Object.assign(authProfile, fields);
+  const map: Record<string, string> = {
+    name: "name",
+    faculty: "faculty",
+    study_year: "studyYear",
+    avatar_path: "avatarPath",
+    profile_status: "profileStatus",
+    phone: "phone",
+  };
   for (const list of [db, syncedDb]) {
     const me = list?.members?.find((m: any) => m.id === authProfile.id);
-    if (me) {
-      me.name = fields.name;
-      me.faculty = fields.faculty;
-      me.studyYear = fields.study_year;
-      me.avatarPath = fields.avatar_path;
-      me.profileStatus = fields.profile_status;
-    }
+    if (!me) continue;
+    for (const [column, key] of Object.entries(map))
+      if (column in fields)
+        me[key] = fields[column] ?? (key === "phone" ? "" : null);
   }
   paintChip();
   render();
@@ -638,7 +693,7 @@ async function openWorkspace(user: any) {
   const { data: profile, error } = await supabase
     .from("members")
     .select(
-      "id,name,email,club_role,is_club_admin,status,faculty,study_year,avatar_path,profile_status",
+      "id,name,email,club_role,is_club_admin,status,faculty,study_year,avatar_path,profile_status,phone",
     )
     .ilike("email", user.email)
     .maybeSingle();
@@ -774,6 +829,7 @@ $("profileLater").addEventListener("click", async () => {
         p_study_year: authProfile.study_year || null,
         p_avatar_path: authProfile.avatar_path || null,
         p_profile_status: "Skipped",
+        p_phone: authProfile.phone || null,
       });
       applyOwnProfile({ profile_status: "Skipped" });
     }
@@ -867,7 +923,7 @@ async function loadSharedWorkspace() {
     supabase
       .from("members")
       .select(
-        "id,name,email,club_role,department_id,is_club_admin,status,faculty,study_year,avatar_path,profile_status",
+        "id,name,email,club_role,department_id,is_club_admin,status,faculty,study_year,avatar_path,profile_status,phone",
       ),
     supabase.from("departments").select("id,name,description,head_member_id"),
     supabase
@@ -1052,6 +1108,7 @@ async function loadSharedWorkspace() {
         studyYear: item.study_year || null,
         avatarPath: item.avatar_path || null,
         profileStatus: item.profile_status || "Pending",
+        phone: item.phone || "",
         departments: memberDeptList,
         department: memberDeptList[0] || "",
         projects: assignmentsByMember.get(item.id) || [],
@@ -1833,7 +1890,7 @@ function mountOwnProfile() {
 function renderProfileInfo() {
   if (!authProfile) return;
   const missing = profileMissing(authProfile);
-  const total = 4; // photo, name, faculty, year (name is always present)
+  const total = 5; // photo, name, phone, faculty, year (name is always present)
   const done = total - missing.length;
   const pct = Math.round((done / total) * 100);
   const nudge = $("profileNudge");
@@ -1863,6 +1920,40 @@ function renderProfileInfo() {
     : "";
 }
 $("profileBtn").onclick = () => show("profile");
+$("passwordChangeForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!supabase || !authProfile) return;
+  const note = $("pwNote");
+  const say = (text: string, isError = false) => {
+    note.textContent = text;
+    note.classList.toggle("error", isError);
+  };
+  const current = $("pwCurrent").value;
+  const next = $("pwNew").value;
+  const confirmation = $("pwConfirm").value;
+  if (!current) return say("Enter your current password.", true);
+  if (next.length < 8)
+    return say("Your new password needs at least 8 characters.", true);
+  if (next !== confirmation)
+    return say("The new passwords do not match.", true);
+  if (next === current)
+    return say("Choose a password different from your current one.", true);
+  $("pwSave").disabled = true;
+  try {
+    // Confirm it is really the account owner before changing anything.
+    const check = await supabase.auth.signInWithPassword({
+      email: authProfile.email,
+      password: current,
+    });
+    if (check.error) return say("Your current password is not correct.", true);
+    const { error } = await supabase.auth.updateUser({ password: next });
+    if (error) return say("Could not change the password. Try again.", true);
+    $("passwordChangeForm").reset();
+    say("Password changed. Use it the next time you sign in.");
+  } finally {
+    $("pwSave").disabled = false;
+  }
+});
 $("profileReset").onclick = async () => {
   if (!supabase || !authProfile) return;
   const { error } = await supabase.auth.resetPasswordForEmail(
