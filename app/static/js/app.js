@@ -22386,6 +22386,15 @@ END:VCALENDAR\r
         alert("Choose the department or project for this head position.");
         return;
       }
+      if (m.id && (m.clubRole !== primary || (m.extraRole || "") !== extra || (m.headScope || "") !== scopeValue)) {
+        db.departments.forEach((d) => {
+          if (d.head === m.id) d.head = "";
+        });
+        db.projects.forEach((p) => {
+          if (p.lead === m.id) p.lead = "";
+        });
+        m.positionNames = [];
+      }
       if (headRole === "Department Head") {
         let d = db.departments.find((x) => x.name === scopeValue);
         if (d) d.head = m.id || "";
