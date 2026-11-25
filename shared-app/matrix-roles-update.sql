@@ -257,3 +257,9 @@ grant insert,delete on public.member_departments to authenticated;
 grant insert,update,delete on public.member_positions to authenticated;
 grant insert,update,delete on public.project_assignments to authenticated;
 grant execute on all functions in schema app_private to authenticated;
+
+-- The app reads the positions catalogue to save President / Vice President / Department Head /
+-- Project Head assignments into member_positions (which the permission functions rely on).
+-- Without a read policy, RLS hides every row and those assignments are never saved.
+drop policy if exists positions_read on public.positions;
+create policy positions_read on public.positions for select to authenticated using (true);
