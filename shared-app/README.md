@@ -39,3 +39,7 @@ The global system admin is a permission on a member profile, not a club position
 - `task-assignment-workflow.sql`: adds multi-project and multi-department task scopes, starts tasks unassigned, validates assignees against those scopes, and restricts completion to the system admin, President, Vice President, or a linked project head. Run after the other two current scripts.
 - `executive-roles-update.sql`: older migration retained for reference; do not run after the matrix migration.
 - `.env.example`: public Supabase browser config plus a clearly marked server-only placeholder.
+
+## Profile details
+
+Run `profile-update.sql` after the role migrations. It adds `faculty`, `study_year`, `avatar_path` and `profile_status` to `members`, the `update_own_profile` function (members edit only their own profile details) and the `avatars` storage bucket with per-member upload rules.

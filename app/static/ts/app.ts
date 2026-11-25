@@ -149,6 +149,8 @@ let db: any = structuredClone(starter),
   saveQueue: Promise<void> = Promise.resolve(),
   passwordSetupFlow = false,
   inviteSetupFlow = false,
+  profileSetupPending = false,
+  profileFormOwner = "",
   openingSessionFor = "";
 const $ = (id: string): any => document.getElementById(id) as any;
 
@@ -169,10 +171,363 @@ function go(path: typeof HUB_PATH | typeof LOGIN_PATH) {
   window.location.replace(path);
 }
 // Exactly one screen is ever visible: the loading splash, sign-in, or the hub.
-function reveal(which: "gate" | "app") {
+function reveal(which: "gate" | "profile" | "app") {
   $("bootSplash").classList.add("hidden");
   $("authGate").classList.toggle("hidden", which !== "gate");
+  $("profileGate").classList.toggle("hidden", which !== "profile");
   $("appShell").classList.toggle("hidden", which !== "app");
+}
+
+// ---- Profile details: faculties, years, photo ----------------------------
+// Every faculty is a 4-year programme except Engineering (5 years).
+const FACULTIES = [
+  "Engineering",
+  "Computer Science",
+  "Mass Communication",
+  "Arts and Design",
+  "Business",
+  "Science",
+  "Other",
+];
+const YEAR_NAMES = ["1st", "2nd", "3rd", "4th", "5th"];
+function yearsFor(faculty: string) {
+  return faculty === "Engineering" ? 5 : 4;
+}
+function splitName(full: string) {
+  const parts = String(full || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return { first: parts[0] || "", last: parts.slice(1).join(" ") };
+}
+function avatarUrl(path: string) {
+  if (!supabase || !path) return "";
+  return supabase.storage.from("avatars").getPublicUrl(path).data.publicUrl;
+}
+function setAvatar(el: HTMLElement, path: string, name: string) {
+  const url = avatarUrl(path);
+  el.style.backgroundImage = url ? `url("${url}")` : "";
+  el.textContent = url ? "" : initials(name);
+}
+function profileMissing(profile: any) {
+  const missing: string[] = [];
+  if (!profile?.avatar_path) missing.push("profile photo");
+  if (!profile?.faculty) missing.push("faculty");
+  if (!profile?.study_year) missing.push("year of study");
+  return missing;
+}
+// A square, 400px JPEG keeps photos small and consistent.
+function squarePhoto(file: File): Promise<{ blob: Blob; preview: string }> {
+  return new Promise((resolve, reject) => {
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type))
+      return reject(new Error("Choose a JPG, PNG or WebP image."));
+    if (file.size > 8 * 1024 * 1024)
+      return reject(new Error("That photo is too large. Use one under 8 MB."));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read that photo."));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error("Could not read that photo."));
+      image.onload = () => {
+        const side = Math.min(image.width, image.height);
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 400;
+        const context = canvas.getContext("2d");
+        if (!context) return reject(new Error("Could not process the photo."));
+        context.drawImage(
+          image,
+          (image.width - side) / 2,
+          (image.height - side) / 2,
+          side,
+          side,
+          0,
+          0,
+          400,
+          400,
+        );
+        const preview = canvas.toDataURL("image/jpeg", 0.85);
+        canvas.toBlob(
+          (blob) =>
+            blob
+              ? resolve({ blob, preview })
+              : reject(new Error("Could not process the photo.")),
+          "image/jpeg",
+          0.85,
+        );
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// One form, mounted in two places: the first-login step and My profile.
+function mountProfileForm(
+  host: HTMLElement,
+  prefix: string,
+  profile: any,
+  options: { submitLabel: string; stacked: boolean; onSaved: () => void },
+) {
+  const names = splitName(profile.name);
+  const state = {
+    blob: null as Blob | null,
+    path: profile.avatar_path || "",
+    previous: profile.avatar_path || "",
+  };
+  const facultyOptions = [...FACULTIES];
+  if (profile.faculty && !facultyOptions.includes(profile.faculty))
+    facultyOptions.push(profile.faculty);
+  host.innerHTML = `<form class="pf" novalidate>
+    <div class="pf-photo">
+      <div class="pf-avatar" id="${prefix}Avatar" aria-hidden="true"></div>
+      <div class="pf-photo-actions">
+        <div class="pf-photo-buttons">
+          <button class="btn ghost" type="button" id="${prefix}Upload">Upload a photo</button>
+          <button class="btn ghost" type="button" id="${prefix}Remove">Remove</button>
+        </div>
+        <div class="pf-hint">JPG, PNG or WebP. Square works best. You can change it later.</div>
+        <input type="file" id="${prefix}File" accept="image/jpeg,image/png,image/webp" hidden />
+      </div>
+    </div>
+    <div class="pf-row">
+      <div class="pf-field"><label for="${prefix}First">First name</label>
+        <input id="${prefix}First" autocomplete="given-name" maxlength="60" value="${esc(names.first)}" /></div>
+      <div class="pf-field"><label for="${prefix}Last">Last name</label>
+        <input id="${prefix}Last" autocomplete="family-name" maxlength="60" value="${esc(names.last)}" /></div>
+    </div>
+    <div class="pf-hint" style="margin-top:-10px">Filled in from the name on your invitation. Change it if it is not right.</div>
+    <div class="pf-field"><label for="${prefix}Email">Email</label>
+      <input id="${prefix}Email" type="email" readonly value="${esc(profile.email)}" />
+      <div class="pf-hint">Your email is tied to your invitation and can only be changed by the system admin.</div></div>
+    <div class="pf-row">
+      <div class="pf-field"><label for="${prefix}Faculty">Faculty</label>
+        <select id="${prefix}Faculty"><option value="">Choose your faculty</option>${options_(facultyOptions, profile.faculty || "")}</select></div>
+      <div class="pf-field"><label for="${prefix}Year">Year of study</label>
+        <select id="${prefix}Year"></select></div>
+    </div>
+    <div class="pf-error" id="${prefix}Error" role="alert"></div>
+    <div class="pf-actions${options.stacked ? " stacked" : ""}">
+      <button class="btn lime" type="submit" id="${prefix}Save">${esc(options.submitLabel)}</button>
+      ${options.stacked ? "" : `<button class="btn ghost" type="button" id="${prefix}Cancel">Cancel</button>`}
+    </div></form>`;
+  const q = (id: string): any => host.querySelector("#" + prefix + id);
+  const fillYears = (selected: string) => {
+    const count = yearsFor(q("Faculty").value);
+    q("Year").innerHTML =
+      `<option value="">Choose your year</option>` +
+      YEAR_NAMES.slice(0, count)
+        .map(
+          (name, i) =>
+            `<option value="${i + 1}" ${String(i + 1) === selected ? "selected" : ""}>${name} year</option>`,
+        )
+        .join("");
+  };
+  fillYears(profile.study_year ? String(profile.study_year) : "");
+  q("Faculty").onchange = () => {
+    const kept = q("Year").value;
+    fillYears(Number(kept) <= yearsFor(q("Faculty").value) ? kept : "");
+  };
+  const showAvatar = (preview = "") => {
+    const box = q("Avatar");
+    const name = `${q("First").value} ${q("Last").value}`;
+    if (preview) box.style.backgroundImage = `url("${preview}")`;
+    else if (state.path && !state.blob)
+      box.style.backgroundImage = `url("${avatarUrl(state.path)}")`;
+    else box.style.backgroundImage = "";
+    const has = Boolean(
+      preview || (state.path && !state.blob && avatarUrl(state.path)),
+    );
+    box.classList.toggle("has-photo", has);
+    box.textContent = has ? "" : initials(name);
+    q("Remove").hidden = !has;
+  };
+  showAvatar();
+  q("First").oninput = q("Last").oninput = () => {
+    if (!q("Avatar").classList.contains("has-photo")) showAvatar();
+  };
+  q("Upload").onclick = () => q("File").click();
+  q("File").onchange = async (event: any) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const photo = await squarePhoto(file);
+      state.blob = photo.blob;
+      q("Error").textContent = "";
+      showAvatar(photo.preview);
+    } catch (error) {
+      q("Error").textContent =
+        error instanceof Error ? error.message : "Could not use that photo.";
+    }
+  };
+  q("Remove").onclick = () => {
+    state.blob = null;
+    state.path = "";
+    showAvatar();
+  };
+  const cancel = q("Cancel");
+  if (cancel) cancel.onclick = () => options.onSaved();
+  const submit = host.querySelector("form") as HTMLFormElement;
+  submit.onsubmit = async (event) => {
+    event.preventDefault();
+    const first = q("First").value.trim();
+    const last = q("Last").value.trim();
+    const faculty = q("Faculty").value;
+    const year = q("Year").value ? Number(q("Year").value) : null;
+    q("Error").textContent = "";
+    if (!first) {
+      q("Error").textContent = "Enter your first name.";
+      return;
+    }
+    if (year && year > yearsFor(faculty)) {
+      q("Error").textContent = "Choose a valid year for that faculty.";
+      return;
+    }
+    const button = q("Save");
+    button.disabled = true;
+    try {
+      await saveOwnProfile({
+        name: `${first} ${last}`.trim(),
+        faculty,
+        year,
+        blob: state.blob,
+        path: state.path,
+        previous: state.previous,
+        status: faculty && year ? "Complete" : "Pending",
+      });
+      options.onSaved();
+    } catch (error) {
+      q("Error").textContent =
+        error instanceof Error ? error.message : "Could not save your profile.";
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+function options_(list: string[], selected: string) {
+  return options(list, selected);
+}
+
+async function saveOwnProfile(input: {
+  name: string;
+  faculty: string;
+  year: number | null;
+  blob: Blob | null;
+  path: string;
+  previous: string;
+  status: "Pending" | "Skipped" | "Complete";
+}) {
+  if (!supabase || !authProfile) throw new Error("You are not signed in.");
+  let path = input.path;
+  if (input.blob) {
+    path = `${authProfile.id}/avatar-${Date.now()}.jpg`;
+    const { error } = await supabase.storage
+      .from("avatars")
+      .upload(path, input.blob, { contentType: "image/jpeg" });
+    if (error)
+      throw new Error(
+        "Your photo could not be uploaded. Try a smaller image or try again.",
+      );
+  }
+  const { error } = await supabase.rpc("update_own_profile", {
+    p_name: input.name,
+    p_faculty: input.faculty || null,
+    p_study_year: input.year,
+    p_avatar_path: path || null,
+    p_profile_status: input.status,
+  });
+  if (error) {
+    if (input.blob) await supabase.storage.from("avatars").remove([path]);
+    throw new Error(
+      error.message.includes("function")
+        ? "Profile saving is not set up in Supabase yet. Ask the system admin to run shared-app/profile-update.sql."
+        : error.message,
+    );
+  }
+  if (input.previous && input.previous !== path)
+    void supabase.storage.from("avatars").remove([input.previous]);
+  applyOwnProfile({
+    name: input.name,
+    faculty: input.faculty || null,
+    study_year: input.year,
+    avatar_path: path || null,
+    profile_status: input.status,
+  });
+}
+// Keep the signed-in profile and the loaded member list in step with the save.
+function applyOwnProfile(fields: any) {
+  Object.assign(authProfile, fields);
+  for (const list of [db, syncedDb]) {
+    const me = list?.members?.find((m: any) => m.id === authProfile.id);
+    if (me) {
+      me.name = fields.name;
+      me.faculty = fields.faculty;
+      me.studyYear = fields.study_year;
+      me.avatarPath = fields.avatar_path;
+      me.profileStatus = fields.profile_status;
+    }
+  }
+  paintChip();
+  render();
+}
+function paintChip() {
+  if (!authProfile) return;
+  $("signedInAs").textContent = authProfile.name || authProfile.email;
+  setAvatar($("chipAvatar"), authProfile.avatar_path, authProfile.name);
+}
+
+const STEPS = [
+  "Create your password",
+  "Complete your profile",
+  "Open your workspace",
+];
+// The left-hand panel changes with the step the person is on.
+function setAuthSide(mode: "login" | "invite" | "recovery" | "profile") {
+  const copy = {
+    login: [
+      "Welcome to Vines",
+      "Make something people remember.",
+      "People bring the skills. Projects bring the stories. This is where they meet.",
+    ],
+    invite: [
+      "You are invited",
+      "Join the crew in three quick steps.",
+      "Create a password, tell us a little about yourself, and you are in.",
+    ],
+    recovery: [
+      "Almost back in",
+      "Choose a new password.",
+      "Pick something you have not used before. You will be signed in right after.",
+    ],
+    profile: [
+      "Welcome to Vines",
+      "Tell us who is joining the crew.",
+      "A photo, your faculty and your year help department heads and teammates know who they are working with.",
+    ],
+  }[mode];
+  const step = mode === "invite" ? 0 : mode === "profile" ? 1 : -1;
+  document
+    .querySelectorAll<HTMLElement>("[data-pitch-kicker]")
+    .forEach((el) => {
+      el.textContent = copy[0];
+    });
+  document.querySelectorAll<HTMLElement>("[data-pitch-title]").forEach((el) => {
+    el.textContent = copy[1];
+  });
+  document.querySelectorAll<HTMLElement>("[data-pitch-copy]").forEach((el) => {
+    el.textContent = copy[2];
+  });
+  document
+    .querySelectorAll<HTMLElement>("[data-auth-steps]")
+    .forEach((list) => {
+      list.hidden = step < 0;
+      list.innerHTML = STEPS.map((label, i) => {
+        const state = i < step ? "done" : i === step ? "current" : "";
+        return `<li class="${state}"><span class="dot" aria-hidden="true">${i < step ? "✓" : i + 1}</span>${esc(label)}</li>`;
+      }).join("");
+    });
+  $("authEyebrow").textContent =
+    mode === "invite" ? "Step 1 of 3" : "Members workspace";
 }
 // A message for the sign-in page survives the redirect in sessionStorage, not
 // in the URL, and is only ever shown as text.
@@ -265,6 +620,7 @@ function showAuthGate(message = "", isError = false) {
   $("authTitle").textContent = "Welcome back";
   $("authCopy").textContent =
     "Sign in with the email and password from your Vines invitation.";
+  setAuthSide("login");
   authNotice(message, isError);
 }
 
@@ -281,7 +637,9 @@ async function openWorkspace(user: any) {
   openingSessionFor = user.id;
   const { data: profile, error } = await supabase
     .from("members")
-    .select("id,name,email,club_role,is_club_admin,status")
+    .select(
+      "id,name,email,club_role,is_club_admin,status,faculty,study_year,avatar_path,profile_status",
+    )
     .ilike("email", user.email)
     .maybeSingle();
   if (error || !profile) {
@@ -381,10 +739,51 @@ async function openWorkspace(user: any) {
   sessionReady = true;
   syncedDb = structuredClone(db);
   openingSessionFor = "";
-  $("signedInAs").textContent = profile.name || profile.email;
-  reveal("app");
+  paintChip();
   render();
+  // Right after accepting an invitation, offer the profile step (skippable).
+  if (profileSetupPending && profile.profile_status === "Pending") {
+    profileSetupPending = false;
+    showProfileSetup();
+    return;
+  }
+  profileSetupPending = false;
+  reveal("app");
 }
+
+function showProfileSetup() {
+  setAuthSide("profile");
+  mountProfileForm($("profileSetupHost"), "ps", authProfile, {
+    submitLabel: "Save and continue",
+    stacked: true,
+    onSaved: () => {
+      reveal("app");
+      show("home");
+    },
+  });
+  reveal("profile");
+}
+$("profileLater").addEventListener("click", async () => {
+  const button = $("profileLater");
+  button.disabled = true;
+  try {
+    if (supabase && authProfile && authProfile.profile_status === "Pending") {
+      await supabase.rpc("update_own_profile", {
+        p_name: authProfile.name,
+        p_faculty: authProfile.faculty || null,
+        p_study_year: authProfile.study_year || null,
+        p_avatar_path: authProfile.avatar_path || null,
+        p_profile_status: "Skipped",
+      });
+      applyOwnProfile({ profile_status: "Skipped" });
+    }
+  } catch {
+    /* skipping never blocks the person from entering the workspace */
+  }
+  button.disabled = false;
+  reveal("app");
+  show("home");
+});
 
 async function initializeSupabase() {
   try {
@@ -422,9 +821,10 @@ async function initializeSupabase() {
     if (passwordSetupFlow) {
       $("loginForm").classList.add("hidden");
       $("setPasswordForm").classList.remove("hidden");
-      $("authTitle").textContent = "Choose a password";
+      $("authTitle").textContent = "Create your password";
       $("authCopy").textContent =
         "Create a password to finish setting up your Vines account.";
+      setAuthSide(inviteSetupFlow ? "invite" : "recovery");
     }
     // The session (including one carried in an invitation link) has been read.
     if (!passwordSetupFlow) tidyUrl();
@@ -466,7 +866,9 @@ async function loadSharedWorkspace() {
   const results = await Promise.all([
     supabase
       .from("members")
-      .select("id,name,email,club_role,department_id,is_club_admin,status"),
+      .select(
+        "id,name,email,club_role,department_id,is_club_admin,status,faculty,study_year,avatar_path,profile_status",
+      ),
     supabase.from("departments").select("id,name,description,head_member_id"),
     supabase
       .from("projects")
@@ -646,6 +1048,10 @@ async function loadSharedWorkspace() {
         headScope: headScopeByMember.get(item.id) || "",
         isClubAdmin: item.is_club_admin,
         status: item.status,
+        faculty: item.faculty || null,
+        studyYear: item.study_year || null,
+        avatarPath: item.avatar_path || null,
+        profileStatus: item.profile_status || "Pending",
         departments: memberDeptList,
         department: memberDeptList[0] || "",
         projects: assignmentsByMember.get(item.id) || [],
@@ -733,6 +1139,7 @@ $("setPasswordForm").addEventListener("submit", async (event) => {
       );
     }
   }
+  profileSetupPending = inviteSetupFlow;
   passwordSetupFlow = false;
   inviteSetupFlow = false;
   forgetSetup();
@@ -1351,8 +1758,10 @@ function show(view) {
       departments: "Departments",
       projects: "Projects",
       structure: "Departments & projects",
+      profile: "My profile",
     }[view] || "Overview";
   if (activeView === "structure") renderStructure();
+  if (view === "profile") mountOwnProfile();
 }
 document
   .querySelectorAll<HTMLButtonElement>(".nav button")
@@ -1408,7 +1817,62 @@ function render() {
   renderCalendar();
   renderAdministration();
   renderStructure();
+  renderProfileInfo();
 }
+function mountOwnProfile() {
+  if (!authProfile) return;
+  mountProfileForm($("profileEditHost"), "pe", authProfile, {
+    submitLabel: "Save changes",
+    stacked: false,
+    onSaved: () => {
+      mountOwnProfile();
+      renderProfileInfo();
+    },
+  });
+}
+function renderProfileInfo() {
+  if (!authProfile) return;
+  const missing = profileMissing(authProfile);
+  const total = 4; // photo, name, faculty, year (name is always present)
+  const done = total - missing.length;
+  const pct = Math.round((done / total) * 100);
+  const nudge = $("profileNudge");
+  nudge.classList.toggle("hidden", missing.length === 0);
+  $("profileNudgeText").textContent = missing.length
+    ? `Still missing: ${missing.join(", ")}.`
+    : "";
+  const banner = $("profileBanner");
+  banner.classList.toggle("hidden", missing.length === 0);
+  $("profileBannerTitle").textContent = `Your profile is ${pct}% complete`;
+  $("profileBannerMissing").textContent = missing.length
+    ? `Still missing: ${missing.join(", ")}.`
+    : "";
+  $("profileMeter").setAttribute("aria-valuenow", String(pct));
+  $("profileMeterFill").style.width = pct + "%";
+  const me = db.members.find((m: any) => m.id === authProfile.id);
+  const chips = (list: string[], empty: string) =>
+    `<div class="profile-place-chips">${
+      list.length
+        ? list.map((x) => `<span class="chip">${esc(x)}</span>`).join("")
+        : `<span class="quiet">${empty}</span>`
+    }</div>`;
+  $("profilePlace").innerHTML = me
+    ? `<div class="profile-place-label">Position</div>${chips(memberRoles(me), "Member")}` +
+      `<div class="profile-place-label">Departments</div>${chips(deptsOf(me), "No department")}` +
+      `<div class="profile-place-label">Projects</div>${chips(me.projects || [], "No project")}`
+    : "";
+}
+$("profileBtn").onclick = () => show("profile");
+$("profileReset").onclick = async () => {
+  if (!supabase || !authProfile) return;
+  const { error } = await supabase.auth.resetPasswordForEmail(
+    authProfile.email,
+    { redirectTo: `${window.location.origin}/?flow=recovery` },
+  );
+  $("profileResetNote").textContent = error
+    ? "Could not send the email. Try again later."
+    : `A reset link is on its way to ${authProfile.email}.`;
+};
 $("importMembersBtn").onclick = () => {
   if (isAdmin()) $("memberCsv").click();
 };
@@ -1517,7 +1981,7 @@ function renderMembers() {
       ? list
           .map(
             (m, i) =>
-              `<div class="member"><div class="person"><span class="avatar c${(i % 4) + 1}">${initials(m.name)}</span><div><div class="row-title">${esc(m.name)}</div><div class="row-sub">${esc(m.email || "Club member")}${m.isClubAdmin ? " · System admin access" : ""}</div></div></div><div>${
+              `<div class="member"><div class="person"><span class="avatar c${(i % 4) + 1}${m.avatarPath ? " photo" : ""}"${m.avatarPath ? ` style="background-image:url('${esc(avatarUrl(m.avatarPath))}')"` : ""}>${initials(m.name)}</span><div><div class="row-title">${esc(m.name)}</div><div class="row-sub">${esc(m.email || "Club member")}${m.isClubAdmin ? " · System admin access" : ""}</div></div></div><div>${
                 deptsOf(m).length
                   ? deptsOf(m)
                       .map((d) => `<span class="chip">${esc(d)}</span>`)

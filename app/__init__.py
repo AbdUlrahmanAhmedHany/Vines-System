@@ -248,16 +248,19 @@ def create_app() -> Flask:
         # Only this site's own scripts may run, and the page may only talk to
         # this site and the configured Supabase project.
         connect = ["'self'"]
+        images = ["'self'", "data:"]
         parsed = urlparse(worker_setting("SUPABASE_URL").strip())
         if parsed.scheme in ("http", "https") and parsed.netloc:
             connect.append(f"{parsed.scheme}://{parsed.netloc}")
+            # Profile photos are served from the project's public storage bucket.
+            images.append(f"{parsed.scheme}://{parsed.netloc}")
         policy = "; ".join(
             [
                 "default-src 'self'",
                 "script-src 'self'",
                 "style-src 'self'",
                 "style-src-attr 'unsafe-inline'",
-                "img-src 'self' data:",
+                f"img-src {' '.join(images)}",
                 "font-src 'self'",
                 f"connect-src {' '.join(connect)}",
                 "object-src 'none'",

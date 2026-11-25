@@ -18,73 +18,122 @@
       ><p class="boot">Vines Club Hub needs JavaScript to run.</p></noscript
     >
     <main class="auth-screen hidden" id="authGate">
-      <section class="auth-card">
+      <aside class="auth-side">
         <div class="brand auth-brand">
           <div class="brand-mark" aria-hidden="true">✳</div>
           <div class="brand-name">
             Vines Club Hub<small>University media club</small>
           </div>
         </div>
-        <p class="eyebrow">Members workspace</p>
-        <h1 id="authTitle">Welcome back</h1>
-        <p class="auth-copy" id="authCopy">
-          Sign in with the email and password from your Vines invitation.
-        </p>
-        <form id="loginForm" class="auth-form">
-          <label for="loginEmail">Email</label>
-          <input
-            id="loginEmail"
-            name="email"
-            type="email"
-            autocomplete="email"
-            required
-          />
-          <label for="loginPassword">Password</label>
-          <input
-            id="loginPassword"
-            name="password"
-            type="password"
-            autocomplete="current-password"
-            required
-          />
-          <button class="btn lime auth-submit" type="submit">Sign in</button>
-          <button class="auth-link" id="forgotPassword" type="button">
-            Forgot password?
+        <div class="auth-pitch">
+          <div class="auth-kicker" data-pitch-kicker>Welcome to Vines</div>
+          <h2 data-pitch-title>Make something people remember.</h2>
+          <p data-pitch-copy>
+            People bring the skills. Projects bring the stories. This is where
+            they meet.
+          </p>
+        </div>
+        <ol class="auth-steps" data-auth-steps hidden></ol>
+      </aside>
+      <div class="auth-main">
+        <section class="auth-card">
+          <p class="eyebrow" id="authEyebrow">Members workspace</p>
+          <h1 id="authTitle">Welcome back</h1>
+          <p class="auth-copy" id="authCopy">
+            Sign in with the email and password from your Vines invitation.
+          </p>
+          <form id="loginForm" class="auth-form">
+            <label for="loginEmail">Email</label>
+            <input
+              id="loginEmail"
+              name="email"
+              type="email"
+              autocomplete="email"
+              required
+            />
+            <label for="loginPassword">Password</label>
+            <input
+              id="loginPassword"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+            <button class="btn lime auth-submit" type="submit">Sign in</button>
+            <button class="auth-link" id="forgotPassword" type="button">
+              Forgot password?
+            </button>
+          </form>
+          <form id="setPasswordForm" class="auth-form hidden">
+            <label for="newPassword">Create your password</label>
+            <input
+              id="newPassword"
+              name="password"
+              type="password"
+              autocomplete="new-password"
+              minlength="8"
+              required
+            />
+            <label for="confirmPassword">Confirm password</label>
+            <input
+              id="confirmPassword"
+              name="confirmPassword"
+              type="password"
+              autocomplete="new-password"
+              minlength="8"
+              required
+            />
+            <button class="btn lime auth-submit" type="submit">
+              Set password
+            </button>
+          </form>
+          <div
+            class="auth-message"
+            id="authMessage"
+            role="status"
+            aria-live="polite"
+          ></div>
+          <p class="auth-foot">
+            No sign-up page. Ask your Vines system admin for an invitation.
+          </p>
+        </section>
+      </div>
+    </main>
+    <main class="auth-screen hidden" id="profileGate">
+      <aside class="auth-side">
+        <div class="brand auth-brand">
+          <div class="brand-mark" aria-hidden="true">✳</div>
+          <div class="brand-name">
+            Vines Club Hub<small>University media club</small>
+          </div>
+        </div>
+        <div class="auth-pitch">
+          <div class="auth-kicker" data-pitch-kicker>Welcome to Vines</div>
+          <h2 data-pitch-title>Make something people remember.</h2>
+          <p data-pitch-copy>
+            People bring the skills. Projects bring the stories. This is where
+            they meet.
+          </p>
+        </div>
+        <ol class="auth-steps" data-auth-steps hidden></ol>
+      </aside>
+      <div class="auth-main">
+        <section class="auth-card profile-card">
+          <p class="eyebrow">Step 2 of 3</p>
+          <h1>Complete your profile</h1>
+          <p class="auth-copy">
+            A photo, your faculty and your year help your teammates know who
+            they are working with. It takes under a minute.
+          </p>
+          <div id="profileSetupHost"></div>
+          <button class="auth-link later-link" id="profileLater" type="button">
+            Continue later
           </button>
-        </form>
-        <form id="setPasswordForm" class="auth-form hidden">
-          <label for="newPassword">Create your password</label>
-          <input
-            id="newPassword"
-            name="password"
-            type="password"
-            autocomplete="new-password"
-            minlength="8"
-            required
-          />
-          <label for="confirmPassword">Confirm password</label>
-          <input
-            id="confirmPassword"
-            name="confirmPassword"
-            type="password"
-            autocomplete="new-password"
-            minlength="8"
-            required
-          />
-          <button class="btn lime auth-submit" type="submit">
-            Set password
-          </button>
-        </form>
-        <div
-          class="auth-message"
-          id="authMessage"
-          role="status"
-          aria-live="polite"
-        ></div>
-        <p class="auth-foot">
-          No sign-up page. Ask your Vines system admin for an invitation.
-        </p>
-      </section>
+          <p class="auth-foot center">
+            You can add these details any time from your profile.
+          </p>
+        </section>
+      </div>
     </main>
     <div class="shell hidden" id="appShell">
       <aside class="side">
@@ -148,13 +197,34 @@
             </div>
           </div>
           <div class="controls">
-            <span class="view-as" id="signedInAs"></span>
+            <button
+              class="user-chip"
+              id="profileBtn"
+              type="button"
+              title="My profile"
+            >
+              <span
+                class="chip-avatar"
+                id="chipAvatar"
+                aria-hidden="true"
+              ></span>
+              <span id="signedInAs"></span>
+            </button>
             <button class="btn ghost small" id="signOutBtn" type="button">
               Sign out
             </button>
           </div>
         </header>
         <section class="view active" id="home">
+          <div class="profile-nudge hidden" id="profileNudge" role="status">
+            <div>
+              <strong id="profileNudgeTitle">Finish your profile</strong>
+              <span id="profileNudgeText"></span>
+            </div>
+            <button class="btn ghost small" data-go="profile" type="button">
+              Open my profile
+            </button>
+          </div>
           <div class="hero">
             <div class="hero-copy">
               <div class="hero-kicker"><span>✳</span> Vines media club</div>
@@ -198,6 +268,52 @@
               </div>
               <div id="homeTasks"></div>
             </div>
+          </div>
+        </section>
+        <section class="view" id="profile">
+          <div class="section-title">
+            <div>
+              <h2>Show them who you are.</h2>
+              <p>How you appear to the rest of the club.</p>
+            </div>
+          </div>
+          <div class="profile-banner hidden" id="profileBanner">
+            <div class="profile-banner-text">
+              <strong id="profileBannerTitle"></strong>
+              <div
+                class="profile-meter"
+                role="progressbar"
+                aria-label="Profile completion"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                id="profileMeter"
+              >
+                <span id="profileMeterFill"></span>
+              </div>
+              <small id="profileBannerMissing"></small>
+            </div>
+          </div>
+          <div class="profile-grid">
+            <div class="card profile-edit">
+              <h3>Your details</h3>
+              <div id="profileEditHost"></div>
+            </div>
+            <aside class="profile-side">
+              <div class="card">
+                <h3>Your place in Vines</h3>
+                <p class="quiet">
+                  Set by the club. Ask a head or the admin to change these.
+                </p>
+                <div id="profilePlace"></div>
+              </div>
+              <div class="card">
+                <h3>Sign-in</h3>
+                <button class="btn ghost small" id="profileReset" type="button">
+                  Email me a password reset link
+                </button>
+                <div class="quiet" id="profileResetNote" role="status"></div>
+              </div>
+            </aside>
           </div>
         </section>
         <section class="view" id="members">
