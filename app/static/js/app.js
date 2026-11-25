@@ -22629,7 +22629,7 @@ ${suffix}`;
   function renderMembers() {
     let q = $("memberSearch").value.toLowerCase(), df = $("memberDeptFilter").value, pf = $("memberProjectFilter").value;
     let list = allowedMembers().filter(
-      (m) => (!q || m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q)) && (!df || deptsOf(m).includes(df)) && (!pf || m.projects.includes(pf))
+      (m) => m.status === "Active" && (!q || m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q)) && (!df || deptsOf(m).includes(df)) && (!pf || m.projects.includes(pf))
     );
     $("memberList").innerHTML = `<div class="member header"><span>Member</span><span>Departments</span><span>Projects</span><span>Positions</span><span></span></div>` + (list.length ? list.map(
       (m, i) => `<div class="member"><div class="person"><span class="avatar c${i % 4 + 1}${m.avatarPath ? " photo" : ""}"${m.avatarPath ? ` style="background-image:url('${esc(avatarUrl(m.avatarPath))}')"` : ""}>${initials(m.name)}</span><div><div class="row-title">${esc(m.name)}</div><div class="row-sub">${esc(m.email || "Club member")}${m.isClubAdmin ? " \xB7 System admin access" : ""}</div></div></div><div>${deptsOf(m).length ? deptsOf(m).map((d) => `<span class="chip">${esc(d)}</span>`).join(" ") : '<span class="quiet">No department</span>'}</div><div class="items">${m.projects.length ? m.projects.map((p) => `<span class="chip">${esc(p)}</span>`).join("") : '<span class="quiet">No project</span>'}</div><div>${memberRoles(
