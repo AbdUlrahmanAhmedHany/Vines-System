@@ -171,7 +171,8 @@ def create_app() -> Flask:
             if not email or "@" not in email:
                 return jsonify(error="Enter a valid member email address."), 400
 
-            query = urlencode({"select": "id,email,is_club_admin,status", "email": f"ilike.{email}", "limit": "1"})
+            # Who is asking? Look up the signed-in caller (not the person being invited).
+            query = urlencode({"select": "id,email,is_club_admin,status", "email": f"ilike.{user['email']}", "limit": "1"})
             status, profiles = upstream(
                 f"rest/v1/members?{query}", "GET", secret, secret
             )
