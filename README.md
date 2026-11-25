@@ -4,6 +4,7 @@ A presentable local project for the Vines university media club. It uses Flask t
 
 ## Project layout
 
+
 ```text
 app/
   __init__.py              Flask app factory and routes
