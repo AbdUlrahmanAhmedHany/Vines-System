@@ -21079,9 +21079,81 @@ ${suffix}`;
     notice.textContent = message;
     notice.classList.toggle("error", isError);
   }
+  var HUB_PATH = "/";
+  var LOGIN_PATH = "/login";
+  var onLoginPage = window.location.pathname.replace(/\/+$/, "") === LOGIN_PATH;
+  var AUTH_NOTICE_KEY = "vines-auth-notice";
+  function go(path) {
+    window.location.replace(path);
+  }
+  function reveal(which) {
+    $("bootSplash").classList.add("hidden");
+    $("authGate").classList.toggle("hidden", which !== "gate");
+    $("appShell").classList.toggle("hidden", which !== "app");
+  }
+  function rememberNotice(message, isError) {
+    try {
+      sessionStorage.setItem(
+        AUTH_NOTICE_KEY,
+        JSON.stringify({ message, isError })
+      );
+    } catch {
+    }
+  }
+  function takeNotice() {
+    try {
+      const raw = sessionStorage.getItem(AUTH_NOTICE_KEY);
+      sessionStorage.removeItem(AUTH_NOTICE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return typeof parsed?.message === "string" ? {
+        message: parsed.message.slice(0, 300),
+        isError: parsed.isError === true
+      } : null;
+    } catch {
+      return null;
+    }
+  }
+  function sendToLogin(message = "", isError = false) {
+    forgetSetup();
+    if (onLoginPage) {
+      showAuthGate(message, isError);
+      return;
+    }
+    rememberNotice(message, isError);
+    go(LOGIN_PATH);
+  }
+  var linkToken = new URLSearchParams(window.location.hash.slice(1)).get("access_token") || "";
+  var SETUP_KEY = "vines-password-setup";
+  function rememberSetup(flow, userId) {
+    try {
+      sessionStorage.setItem(SETUP_KEY, JSON.stringify({ flow, userId }));
+    } catch {
+    }
+  }
+  function pendingSetup(userId) {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(SETUP_KEY) || "null");
+      return saved?.userId === userId && (saved.flow === "invite" || saved.flow === "recovery") ? saved.flow : "";
+    } catch {
+      return "";
+    }
+  }
+  function forgetSetup() {
+    try {
+      sessionStorage.removeItem(SETUP_KEY);
+    } catch {
+    }
+  }
+  function readSetupFlow() {
+    const value = new URLSearchParams(window.location.search).get("flow") || new URLSearchParams(window.location.hash.slice(1)).get("type") || "";
+    return value === "invite" || value === "recovery" ? value : "";
+  }
+  function tidyUrl() {
+    if (window.location.search || window.location.hash)
+      window.history.replaceState(null, "", window.location.pathname);
+  }
   function showAuthGate(message = "", isError = false) {
-    $("appShell").classList.add("hidden");
-    $("authGate").classList.remove("hidden");
+    reveal("gate");
     $("loginForm").classList.remove("hidden");
     $("setPasswordForm").classList.add("hidden");
     $("authTitle").textContent = "Welcome back";
@@ -21091,8 +21163,7 @@ ${suffix}`;
   async function openWorkspace(user) {
     if (!supabase || !user?.email) return;
     if (passwordSetupFlow) {
-      $("appShell").classList.add("hidden");
-      $("authGate").classList.remove("hidden");
+      reveal("gate");
       $("loginForm").classList.add("hidden");
       $("setPasswordForm").classList.remove("hidden");
       return;
@@ -21104,7 +21175,7 @@ ${suffix}`;
     if (error || !profile) {
       openingSessionFor = "";
       await supabase.auth.signOut();
-      showAuthGate(
+      sendToLogin(
         "This email is not linked to a Vines member profile. Ask the system admin for help.",
         true
       );
@@ -21113,20 +21184,30 @@ ${suffix}`;
     if (profile.status !== "Active") {
       openingSessionFor = "";
       await supabase.auth.signOut();
-      showAuthGate(
+      sendToLogin(
         "Your Vines invitation is not active yet. Ask the system admin to check your profile.",
         true
       );
       return;
     }
+    if (onLoginPage) {
+      go(HUB_PATH);
+      return;
+    }
     authUser = user;
     authProfile = profile;
-    const positionsResult = await supabase.from("member_positions").select("position_id,department_id,project_id").eq("member_id", profile.id);
-    const catalogResult = await supabase.from("positions").select("id,name");
+    const [positionsResult, catalogResult, workspace] = await Promise.all([
+      supabase.from("member_positions").select("position_id,department_id,project_id").eq("member_id", profile.id),
+      supabase.from("positions").select("id,name"),
+      loadSharedWorkspace().then(
+        (value) => ({ value, failure: null }),
+        (failure) => ({ value: null, failure })
+      )
+    ]);
     if (positionsResult.error || catalogResult.error) {
       openingSessionFor = "";
       await supabase.auth.signOut();
-      showAuthGate(
+      sendToLogin(
         "Your profile is linked, but role data is not ready. Ask the system admin to check the matrix migration.",
         true
       );
@@ -21141,7 +21222,8 @@ ${suffix}`;
     selectedPerson = profile.id;
     KEY = `${KEY_PREFIX}${String(profile.email).toLowerCase()}`;
     try {
-      db = await loadSharedWorkspace();
+      if (workspace.failure) throw workspace.failure;
+      db = workspace.value;
       if (db.departments.some((department) => department.head === profile.id))
         currentPositions.push("Department Head");
       if (db.projects.some((project) => project.lead === profile.id))
@@ -21155,7 +21237,7 @@ ${suffix}`;
     } catch (loadError) {
       openingSessionFor = "";
       await supabase.auth.signOut();
-      showAuthGate(
+      sendToLogin(
         loadError instanceof Error ? loadError.message : "Could not load the shared workspace.",
         true
       );
@@ -21165,8 +21247,7 @@ ${suffix}`;
     syncedDb = structuredClone(db);
     openingSessionFor = "";
     $("signedInAs").textContent = profile.name || profile.email;
-    $("authGate").classList.add("hidden");
-    $("appShell").classList.remove("hidden");
+    reveal("app");
     render();
   }
   async function initializeSupabase() {
@@ -21184,17 +21265,35 @@ ${suffix}`;
           detectSessionInUrl: true
         }
       });
-      const flow = new URLSearchParams(window.location.search).get("flow") || new URLSearchParams(window.location.hash.slice(1)).get("type") || "";
+      const requestedFlow = onLoginPage ? "" : readSetupFlow();
+      const { data } = await supabase.auth.getSession();
+      let flow = "";
+      if (!onLoginPage && data.session) {
+        const linkWorked = requestedFlow !== "" && linkToken !== "" && data.session.access_token === linkToken;
+        if (linkWorked) {
+          flow = requestedFlow;
+          rememberSetup(flow, data.session.user.id);
+        } else flow = pendingSetup(data.session.user.id);
+      }
       inviteSetupFlow = flow === "invite";
-      passwordSetupFlow = ["invite", "recovery"].includes(flow);
+      passwordSetupFlow = flow !== "";
       if (passwordSetupFlow) {
         $("loginForm").classList.add("hidden");
         $("setPasswordForm").classList.remove("hidden");
         $("authTitle").textContent = "Choose a password";
         $("authCopy").textContent = "Create a password to finish setting up your Vines account.";
       }
-      const { data } = await supabase.auth.getSession();
+      if (!passwordSetupFlow) tidyUrl();
       if (data.session) await openWorkspace(data.session.user);
+      else if (requestedFlow)
+        sendToLogin(
+          "This link has expired or was already used. Ask the system admin for a new invitation, or use Forgot password.",
+          true
+        );
+      else if (onLoginPage) {
+        const notice = takeNotice();
+        showAuthGate(notice?.message || "", notice?.isError);
+      } else sendToLogin();
       supabase.auth.onAuthStateChange((_event, session) => {
         window.setTimeout(() => {
           if (session) void openWorkspace(session.user);
@@ -21206,12 +21305,12 @@ ${suffix}`;
             openingSessionFor = "";
             role = "";
             selectedPerson = "";
-            showAuthGate("You have signed out.");
+            sendToLogin("You have signed out.");
           }
         }, 0);
       });
     } catch (error) {
-      showAuthGate(
+      sendToLogin(
         error instanceof Error ? error.message : "Could not connect to Supabase.",
         true
       );
@@ -21456,6 +21555,7 @@ ${suffix}`;
     }
     passwordSetupFlow = false;
     inviteSetupFlow = false;
+    forgetSetup();
     window.history.replaceState({}, "", window.location.pathname);
     const { data } = await supabase.auth.getUser();
     if (data.user) await openWorkspace(data.user);
@@ -22860,6 +22960,8 @@ END:VCALENDAR\r
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeModal();
   });
-  showAuthGate();
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) window.location.reload();
+  });
   void initializeSupabase();
 })();

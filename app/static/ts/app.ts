@@ -158,9 +158,108 @@ function authNotice(message = "", isError = false) {
   notice.classList.toggle("error", isError);
 }
 
+// "/" is the hub and "/login" is the sign-in page. These two fixed paths are the
+// only places the app ever sends the browser; nothing from the URL is used.
+const HUB_PATH = "/";
+const LOGIN_PATH = "/login";
+const onLoginPage = window.location.pathname.replace(/\/+$/, "") === LOGIN_PATH;
+const AUTH_NOTICE_KEY = "vines-auth-notice";
+
+function go(path: typeof HUB_PATH | typeof LOGIN_PATH) {
+  window.location.replace(path);
+}
+// Exactly one screen is ever visible: the loading splash, sign-in, or the hub.
+function reveal(which: "gate" | "app") {
+  $("bootSplash").classList.add("hidden");
+  $("authGate").classList.toggle("hidden", which !== "gate");
+  $("appShell").classList.toggle("hidden", which !== "app");
+}
+// A message for the sign-in page survives the redirect in sessionStorage, not
+// in the URL, and is only ever shown as text.
+function rememberNotice(message: string, isError: boolean) {
+  try {
+    sessionStorage.setItem(
+      AUTH_NOTICE_KEY,
+      JSON.stringify({ message, isError }),
+    );
+  } catch {
+    /* storage unavailable: the message is simply not carried over */
+  }
+}
+function takeNotice(): { message: string; isError: boolean } | null {
+  try {
+    const raw = sessionStorage.getItem(AUTH_NOTICE_KEY);
+    sessionStorage.removeItem(AUTH_NOTICE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return typeof parsed?.message === "string"
+      ? {
+          message: parsed.message.slice(0, 300),
+          isError: parsed.isError === true,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+// Show the sign-in form when already on /login, otherwise move to /login.
+function sendToLogin(message = "", isError = false) {
+  forgetSetup();
+  if (onLoginPage) {
+    showAuthGate(message, isError);
+    return;
+  }
+  rememberNotice(message, isError);
+  go(LOGIN_PATH);
+}
+// The token an invitation or reset link arrived with. It is read here, before
+// the Supabase client consumes and clears the address-bar hash.
+const linkToken =
+  new URLSearchParams(window.location.hash.slice(1)).get("access_token") || "";
+// While someone is choosing a password after such a link, remember it for that
+// user only, so a refresh keeps the screen but a typed-in URL cannot start it.
+const SETUP_KEY = "vines-password-setup";
+function rememberSetup(flow: string, userId: string) {
+  try {
+    sessionStorage.setItem(SETUP_KEY, JSON.stringify({ flow, userId }));
+  } catch {
+    /* storage unavailable: the screen simply will not survive a refresh */
+  }
+}
+function pendingSetup(userId: string): "invite" | "recovery" | "" {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SETUP_KEY) || "null");
+    return saved?.userId === userId &&
+      (saved.flow === "invite" || saved.flow === "recovery")
+      ? saved.flow
+      : "";
+  } catch {
+    return "";
+  }
+}
+function forgetSetup() {
+  try {
+    sessionStorage.removeItem(SETUP_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+}
+// Only the two known invitation/reset values are honoured; anything else in the
+// URL is ignored.
+function readSetupFlow(): "invite" | "recovery" | "" {
+  const value =
+    new URLSearchParams(window.location.search).get("flow") ||
+    new URLSearchParams(window.location.hash.slice(1)).get("type") ||
+    "";
+  return value === "invite" || value === "recovery" ? value : "";
+}
+// Drop any query string or hash (tokens, injected text) once it has been read.
+function tidyUrl() {
+  if (window.location.search || window.location.hash)
+    window.history.replaceState(null, "", window.location.pathname);
+}
+
 function showAuthGate(message = "", isError = false) {
-  $("appShell").classList.add("hidden");
-  $("authGate").classList.remove("hidden");
+  reveal("gate");
   $("loginForm").classList.remove("hidden");
   $("setPasswordForm").classList.add("hidden");
   $("authTitle").textContent = "Welcome back";
@@ -172,8 +271,7 @@ function showAuthGate(message = "", isError = false) {
 async function openWorkspace(user: any) {
   if (!supabase || !user?.email) return;
   if (passwordSetupFlow) {
-    $("appShell").classList.add("hidden");
-    $("authGate").classList.remove("hidden");
+    reveal("gate");
     $("loginForm").classList.add("hidden");
     $("setPasswordForm").classList.remove("hidden");
     return;
@@ -189,7 +287,7 @@ async function openWorkspace(user: any) {
   if (error || !profile) {
     openingSessionFor = "";
     await supabase.auth.signOut();
-    showAuthGate(
+    sendToLogin(
       "This email is not linked to a Vines member profile. Ask the system admin for help.",
       true,
     );
@@ -198,24 +296,36 @@ async function openWorkspace(user: any) {
   if (profile.status !== "Active") {
     openingSessionFor = "";
     await supabase.auth.signOut();
-    showAuthGate(
+    sendToLogin(
       "Your Vines invitation is not active yet. Ask the system admin to check your profile.",
       true,
     );
     return;
   }
 
+  if (onLoginPage) {
+    // Signed in from the sign-in page: the hub loads its own data.
+    go(HUB_PATH);
+    return;
+  }
   authUser = user;
   authProfile = profile;
-  const positionsResult = await supabase
-    .from("member_positions")
-    .select("position_id,department_id,project_id")
-    .eq("member_id", profile.id);
-  const catalogResult = await supabase.from("positions").select("id,name");
+  // Fetched together so the hub opens after one round trip, not four.
+  const [positionsResult, catalogResult, workspace] = await Promise.all([
+    supabase
+      .from("member_positions")
+      .select("position_id,department_id,project_id")
+      .eq("member_id", profile.id),
+    supabase.from("positions").select("id,name"),
+    loadSharedWorkspace().then(
+      (value) => ({ value, failure: null as unknown }),
+      (failure: unknown) => ({ value: null as any, failure }),
+    ),
+  ]);
   if (positionsResult.error || catalogResult.error) {
     openingSessionFor = "";
     await supabase.auth.signOut();
-    showAuthGate(
+    sendToLogin(
       "Your profile is linked, but role data is not ready. Ask the system admin to check the matrix migration.",
       true,
     );
@@ -242,7 +352,8 @@ async function openWorkspace(user: any) {
   selectedPerson = profile.id;
   KEY = `${KEY_PREFIX}${String(profile.email).toLowerCase()}`;
   try {
-    db = await loadSharedWorkspace();
+    if (workspace.failure) throw workspace.failure;
+    db = workspace.value;
     if (
       db.departments.some((department: any) => department.head === profile.id)
     )
@@ -259,7 +370,7 @@ async function openWorkspace(user: any) {
   } catch (loadError) {
     openingSessionFor = "";
     await supabase.auth.signOut();
-    showAuthGate(
+    sendToLogin(
       loadError instanceof Error
         ? loadError.message
         : "Could not load the shared workspace.",
@@ -271,8 +382,7 @@ async function openWorkspace(user: any) {
   syncedDb = structuredClone(db);
   openingSessionFor = "";
   $("signedInAs").textContent = profile.name || profile.email;
-  $("authGate").classList.add("hidden");
-  $("appShell").classList.remove("hidden");
+  reveal("app");
   render();
 }
 
@@ -292,12 +402,23 @@ async function initializeSupabase() {
         detectSessionInUrl: true,
       },
     });
-    const flow =
-      new URLSearchParams(window.location.search).get("flow") ||
-      new URLSearchParams(window.location.hash.slice(1)).get("type") ||
-      "";
+    const requestedFlow = onLoginPage ? "" : readSetupFlow();
+    const { data } = await supabase.auth.getSession();
+    // An invitation or reset link counts only if the session Supabase created is
+    // the one carried in that very link. A forged or stale URL changes nothing.
+    let flow: "invite" | "recovery" | "" = "";
+    if (!onLoginPage && data.session) {
+      const linkWorked =
+        requestedFlow !== "" &&
+        linkToken !== "" &&
+        data.session.access_token === linkToken;
+      if (linkWorked) {
+        flow = requestedFlow;
+        rememberSetup(flow, data.session.user.id);
+      } else flow = pendingSetup(data.session.user.id);
+    }
     inviteSetupFlow = flow === "invite";
-    passwordSetupFlow = ["invite", "recovery"].includes(flow);
+    passwordSetupFlow = flow !== "";
     if (passwordSetupFlow) {
       $("loginForm").classList.add("hidden");
       $("setPasswordForm").classList.remove("hidden");
@@ -305,9 +426,18 @@ async function initializeSupabase() {
       $("authCopy").textContent =
         "Create a password to finish setting up your Vines account.";
     }
-
-    const { data } = await supabase.auth.getSession();
+    // The session (including one carried in an invitation link) has been read.
+    if (!passwordSetupFlow) tidyUrl();
     if (data.session) await openWorkspace(data.session.user);
+    else if (requestedFlow)
+      sendToLogin(
+        "This link has expired or was already used. Ask the system admin for a new invitation, or use Forgot password.",
+        true,
+      );
+    else if (onLoginPage) {
+      const notice = takeNotice();
+      showAuthGate(notice?.message || "", notice?.isError);
+    } else sendToLogin();
     supabase.auth.onAuthStateChange((_event, session) => {
       window.setTimeout(() => {
         if (session) void openWorkspace(session.user);
@@ -319,12 +449,12 @@ async function initializeSupabase() {
           openingSessionFor = "";
           role = "";
           selectedPerson = "";
-          showAuthGate("You have signed out.");
+          sendToLogin("You have signed out.");
         }
       }, 0);
     });
   } catch (error) {
-    showAuthGate(
+    sendToLogin(
       error instanceof Error ? error.message : "Could not connect to Supabase.",
       true,
     );
@@ -605,6 +735,7 @@ $("setPasswordForm").addEventListener("submit", async (event) => {
   }
   passwordSetupFlow = false;
   inviteSetupFlow = false;
+  forgetSetup();
   window.history.replaceState({}, "", window.location.pathname);
   const { data } = await supabase.auth.getUser();
   if (data.user) await openWorkspace(data.user);
@@ -2453,5 +2584,9 @@ $("structureDetail").addEventListener("click", (e: MouseEvent) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
 });
-showAuthGate();
+// Pressing Back after signing out can restore the hub from the browser's
+// back/forward cache. Re-run the session check instead of showing it.
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) window.location.reload();
+});
 void initializeSupabase();

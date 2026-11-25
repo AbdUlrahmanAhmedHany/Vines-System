@@ -8,10 +8,10 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -37,15 +37,35 @@ def _worker_asset_response(path: str) -> Response | None:
 def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
 
-    @app.get("/")
-    def home():
+    def app_page():
         asset = _worker_asset_response("templates/index.html")
         if asset is not None:
             return asset
         return render_template("index.html")
 
+    # "/" is the hub and "/login" is the sign-in page. Both serve the same shell;
+    # the page decides which screen to show once it has checked the session.
+    @app.get("/")
+    def home():
+        return app_page()
+
+    @app.get("/login")
+    def login_page():
+        return app_page()
+
     @app.get("/static/<path:filename>")
     def static_files(filename: str):
+        # The Worker fetches this path from the assets store, where "..", "%2e"
+        # and backslashes could climb out of /static (for example to the backend
+        # source), so only plain relative file paths are accepted.
+        if (
+            not filename
+            or "%" in filename
+            or "\\" in filename
+            or "\x00" in filename
+            or any(part in ("", ".", "..") for part in filename.split("/"))
+        ):
+            abort(404)
         asset = _worker_asset_response(f"static/{filename}")
         if asset is not None:
             return asset
@@ -222,6 +242,46 @@ def create_app() -> Flask:
             return jsonify(ok=True, email=email), 202
         except RuntimeError as error:
             return jsonify(error=str(error)), 503
+
+    @app.after_request
+    def security_headers(response: Response) -> Response:
+        # Only this site's own scripts may run, and the page may only talk to
+        # this site and the configured Supabase project.
+        connect = ["'self'"]
+        parsed = urlparse(worker_setting("SUPABASE_URL").strip())
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            connect.append(f"{parsed.scheme}://{parsed.netloc}")
+        policy = "; ".join(
+            [
+                "default-src 'self'",
+                "script-src 'self'",
+                "style-src 'self'",
+                "style-src-attr 'unsafe-inline'",
+                "img-src 'self' data:",
+                "font-src 'self'",
+                f"connect-src {' '.join(connect)}",
+                "object-src 'none'",
+                "base-uri 'none'",
+                "form-action 'self'",
+                "frame-ancestors 'none'",
+            ]
+        )
+        headers = response.headers
+        headers.setdefault("Content-Security-Policy", policy)
+        headers.setdefault("X-Content-Type-Options", "nosniff")
+        headers.setdefault("X-Frame-Options", "DENY")
+        headers.setdefault("Referrer-Policy", "no-referrer")
+        headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"
+        )
+        if request.is_secure or request.headers.get("X-Forwarded-Proto", "") == "https":
+            headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        # Pages and API answers are never stored, so signing out and pressing
+        # Back cannot bring a cached hub or response back.
+        if response.mimetype == "text/html" or request.path.startswith("/api/"):
+            headers["Cache-Control"] = "no-store"
+        return response
 
     @app.post("/api/remove-member")
     def remove_member():

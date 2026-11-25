@@ -465,6 +465,13 @@ textarea:focus {
   gap: 10px;
   margin-bottom: 12px;
 }
+/* Administration: the two buttons drop below the title instead of squeezing it. */
+.admin-head {
+  flex-wrap: wrap;
+}
+.admin-head .btn {
+  white-space: nowrap;
+}
 .card-title {
   display: flex;
   align-items: center;
@@ -1272,6 +1279,37 @@ textarea:focus {
   text-align: right;
 }
 
+/* Shown while the session is checked, so neither the sign-in form nor the hub
+   flashes on refresh. Same ground as the sign-in screen. */
+.boot {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  background:
+    radial-gradient(
+      circle at 85% 12%,
+      rgba(174, 234, 61, 0.16),
+      transparent 28%
+    ),
+    #f4f5ed;
+}
+.boot p {
+  margin: 0;
+}
+.boot .brand-mark {
+  animation: boot-pulse 1.2s ease-in-out infinite;
+}
+@keyframes boot-pulse {
+  50% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+}
 .auth-screen {
   display: grid;
   min-height: 100vh;

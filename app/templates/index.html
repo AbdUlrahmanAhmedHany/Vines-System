@@ -4,11 +4,20 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="theme-color" content="#10231c" />
+    <meta name="robots" content="noindex" />
     <title>Vines — Club Hub</title>
     <link rel="stylesheet" href="/static/css/styles.css" />
   </head>
   <body>
-    <main class="auth-screen" id="authGate">
+    <!-- Neither the sign-in form nor the hub is shown until the session is checked. -->
+    <div class="boot" id="bootSplash" role="status" aria-live="polite">
+      <div class="brand-mark" aria-hidden="true">✳</div>
+      <p>Opening Vines Club Hub…</p>
+    </div>
+    <noscript
+      ><p class="boot">Vines Club Hub needs JavaScript to run.</p></noscript
+    >
+    <main class="auth-screen hidden" id="authGate">
       <section class="auth-card">
         <div class="brand auth-brand">
           <div class="brand-mark" aria-hidden="true">✳</div>
@@ -213,15 +222,6 @@
               <h2>People make Vines.</h2>
               <p>One department home. Any number of project teams.</p>
             </div>
-            <div class="controls">
-              <button class="btn ghost" id="importMembersBtn">Import CSV</button
-              ><input
-                class="hidden"
-                id="memberCsv"
-                type="file"
-                accept=".csv,text/csv"
-              />
-            </div>
           </div>
           <div class="filters">
             <input id="memberSearch" placeholder="Search the roster" /><select
@@ -314,21 +314,32 @@
           </div>
           <div class="stat-grid" id="adminStats"></div>
           <div class="card spaced-14">
-            <div class="card-head">
+            <div class="card-head admin-head">
               <div class="card-title">
                 <span class="card-icon mint">✉</span>
                 <h3>Pending invitations</h3>
               </div>
-              <button class="btn lime" id="adminAddMember">
-                ＋ Add member
-              </button>
+              <div class="controls">
+                <button class="btn ghost" id="importMembersBtn">
+                  Import CSV
+                </button>
+                <input
+                  class="hidden"
+                  id="memberCsv"
+                  type="file"
+                  accept=".csv,text/csv"
+                />
+                <button class="btn lime" id="adminAddMember">
+                  ＋ Add member
+                </button>
+              </div>
             </div>
             <div class="structure-list spaced-12" id="pendingInvitations"></div>
           </div>
           <div class="note spaced-14">
-            Create member profiles from Members. Profiles are saved first, then
-            Supabase sends each invitation. Use a configured email provider for
-            larger batches.
+            Add members one at a time or import a CSV from this page. Profiles
+            are saved first, then Supabase sends each invitation. Use a
+            configured email provider for larger batches.
           </div>
         </section>
         <section class="view" id="structure">

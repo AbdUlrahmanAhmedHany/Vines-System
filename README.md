@@ -62,9 +62,17 @@ For local Worker development, install [uv](https://docs.astral.sh/uv/) and Node.
 - The Calendar view shows only tasks the current account may see and exports an `.ics` calendar file for import into Google Calendar or Apple Calendar. It is a manual export, not an automatic sync.
 - The database permissions and invitation flow still need to be checked against the connected Supabase project before the club uses the site.
 - Google sign-in is not configured.
-- The member import preview accepts CSV files (including CSV exported from Excel); it does not import `.xlsx` workbooks directly.
+- Members are added and imported from the Administration page (system admin only). The member import accepts CSV files (including CSV exported from Excel); it does not import `.xlsx` workbooks directly.
 
 Do not invite the club or use real member data until the required Supabase migrations and Worker secrets are configured and the role permissions have been verified.
+
+## Sign-in, sessions and URL safety
+
+- `/` is the hub and `/login` is the sign-in page. Both serve the same page shell, and the page decides which screen to show only after it has checked the session. A short loading screen is shown first, so neither the sign-in form nor the hub flashes on refresh. Signed out on `/` goes to `/login`; signed in on `/login` goes to `/`.
+- The page shell is public. Club data is protected by Supabase Row Level Security and the signed-in session, not by the redirect.
+- Sessions are kept by the Supabase client in the browser's `localStorage` (key `sb-<project>-auth-token`). The site sets no cookies.
+- The app only ever redirects to `/` or `/login`; nothing from the URL is used as a destination. Only `flow=invite` and `flow=recovery` are read from the URL, and an invitation or reset link is honoured only when the session Supabase created matches the token in that link. Query strings and hashes are removed from the address bar after they are read.
+- Every response carries a Content-Security-Policy (own scripts only; connections only to this site and the configured Supabase project), `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` and related headers. Pages and API answers are sent `Cache-Control: no-store`. `/static/` rejects paths containing `..`, `%`, backslashes or empty segments.
 
 ## Environment and secrets
 
