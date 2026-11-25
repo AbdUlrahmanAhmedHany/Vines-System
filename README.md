@@ -66,6 +66,9 @@ For local Worker development, install [uv](https://docs.astral.sh/uv/) and Node.
 
 - After accepting an invitation a member lands on a skippable "Complete your profile" step (photo, first/last name, phone number defaulting to Egypt, faculty, year of study). Everyone can finish or edit it later from **My profile** (click your name at the top). The faculties are Engineering (5 years), Computer Science, Business Informatics and Digital Arts and Design (4 years each). Signed-in members can change their password from **My profile** (current password required) or request a reset email; the sign-in page has "Forgot password?". Profile edits go through the `update_own_profile` database function, so members can change only these details, never their role or access. Photos are stored in the public `avatars` Supabase Storage bucket, one folder per member. Run `shared-app/profile-update.sql` on an existing Supabase project (already applied to the connected one).
 
+- Only the club owner (`members.is_club_owner`) can grant or revoke system access; other admins keep every other admin feature but cannot change anyone's admin status. Mark the owner once in the SQL editor (see the header of `shared-app/access-and-visibility-update.sql`).
+- A person added by the admin is only a pending invitation: they are not counted, listed or placed in any department, project or position until they create a password. The Members page lists every registered member to every signed-in member. Phone numbers are kept in `member_contacts` with narrower read rules. Run `shared-app/access-and-visibility-update.sql` on an existing project (already applied to the connected one).
+
 Do not invite the club or use real member data until the required Supabase migrations and Worker secrets are configured and the role permissions have been verified.
 
 ## Sign-in, sessions and URL safety

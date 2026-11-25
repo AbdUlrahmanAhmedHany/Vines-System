@@ -694,7 +694,7 @@ async function openWorkspace(user: any) {
   const { data: profile, error } = await supabase
     .from("members")
     .select(
-      "id,name,email,club_role,is_club_admin,status,faculty,study_year,avatar_path,profile_status,phone",
+      "id,name,email,club_role,is_club_admin,is_club_owner,status,faculty,study_year,avatar_path,profile_status",
     )
     .ilike("email", user.email)
     .maybeSingle();
@@ -724,6 +724,13 @@ async function openWorkspace(user: any) {
   }
   authUser = user;
   authProfile = profile;
+  // Phone numbers live in their own table with narrower read rules.
+  const contact = await supabase
+    .from("member_contacts")
+    .select("phone")
+    .eq("member_id", profile.id)
+    .maybeSingle();
+  authProfile.phone = contact.data?.phone || "";
   // Fetched together so the hub opens after one round trip, not four.
   const [positionsResult, catalogResult, workspace] = await Promise.all([
     supabase
@@ -924,7 +931,7 @@ async function loadSharedWorkspace() {
     supabase
       .from("members")
       .select(
-        "id,name,email,club_role,department_id,is_club_admin,status,faculty,study_year,avatar_path,profile_status,phone",
+        "id,name,email,club_role,department_id,is_club_admin,is_club_owner,status,faculty,study_year,avatar_path,profile_status",
       ),
     supabase.from("departments").select("id,name,description,head_member_id"),
     supabase
@@ -946,6 +953,7 @@ async function loadSharedWorkspace() {
       .from("member_positions")
       .select("member_id,position_id,department_id,project_id"),
     supabase.from("positions").select("id,name"),
+    supabase.from("member_contacts").select("member_id,phone"),
   ]);
   const failed = results.find((result) => result.error);
   if (failed?.error)
@@ -962,7 +970,11 @@ async function loadSharedWorkspace() {
     updates,
     memberPositions,
     positions,
+    contacts,
   ] = results.map((result) => result.data || []) as any[][];
+  const phoneByMember = new Map<string, string>(
+    contacts.map((item: any) => [item.member_id, item.phone || ""]),
+  );
   const departmentNames = new Map<string, string>(
     departments.map((item: any) => [item.id, item.name]),
   );
@@ -1104,12 +1116,13 @@ async function loadSharedWorkspace() {
           : "",
         headScope: headScopeByMember.get(item.id) || "",
         isClubAdmin: item.is_club_admin,
+        isClubOwner: Boolean(item.is_club_owner),
         status: item.status,
         faculty: item.faculty || null,
         studyYear: item.study_year || null,
         avatarPath: item.avatar_path || null,
         profileStatus: item.profile_status || "Pending",
-        phone: item.phone || "",
+        phone: phoneByMember.get(item.id) || "",
         departments: memberDeptList,
         department: memberDeptList[0] || "",
         projects: assignmentsByMember.get(item.id) || [],
@@ -1666,6 +1679,10 @@ function memberRoles(m) {
 function isAdmin() {
   return role === "System admin access";
 }
+// Only the club owner may grant or revoke system access.
+function isOwner() {
+  return Boolean(authProfile?.is_club_owner);
+}
 function isExecutive() {
   return (
     ["President", "Vice President"].includes(role) ||
@@ -1675,7 +1692,7 @@ function isExecutive() {
   );
 }
 function scope() {
-  return selectedPerson || db.members[0]?.id || "";
+  return selectedPerson || registeredMembers()[0]?.id || "";
 }
 function uid() {
   return crypto.randomUUID();
@@ -1730,8 +1747,13 @@ function isHeadRole() {
     )
   );
 }
+// People who have not created a password yet ("Pending invitation") are not members:
+// they appear only in the Administration pending list.
+function registeredMembers() {
+  return db.members.filter((m: any) => m.status !== "Pending invitation");
+}
 function allowedMembers() {
-  return db.members;
+  return registeredMembers();
 }
 function allowedTasks() {
   return db.tasks;
@@ -1870,7 +1892,7 @@ function render() {
     db.departments.map((department) => department.name),
     "All departments",
   );
-  let members = db.members
+  let members = registeredMembers()
     .map((m) => `<option value="${m.id}">${esc(m.name)}</option>`)
     .join("");
   $("deptHead").innerHTML =
@@ -2007,12 +2029,12 @@ function renderHome() {
   const mode = overviewMode();
   const today = new Date().toISOString().slice(0, 10);
   const weekAhead = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
-  let people: any[] = db.members;
+  let people: any[] = registeredMembers();
   let ts: any[] = db.tasks;
   if (mode === "head") {
     const ds = managedDepartments().map((d) => d.name);
     const ps = managedProjects().map((p) => p.name);
-    people = db.members.filter(
+    people = registeredMembers().filter(
       (m) =>
         deptsOf(m).some((d) => ds.includes(d)) ||
         (m.projects || []).some((p) => ps.includes(p)),
@@ -2105,9 +2127,10 @@ function renderMembers() {
                 m,
               )
                 .map((r) => `<span class="badge role">${esc(r)}</span>`)
+                .concat(m.isClubOwner ? ['<span class="badge role">Owner</span>'] : [])
                 .join(
                   " ",
-                )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button><button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}${canRemoveMember(m) ? `<button class="btn danger small" data-action="remove-member" data-id="${m.id}">Remove</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`,
+                )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button>${isOwner() && !m.isClubOwner ? `<button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>` : ""}${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}${canRemoveMember(m) ? `<button class="btn danger small" data-action="remove-member" data-id="${m.id}">Remove</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`,
           )
           .join("")
       : '<div class="empty"><strong>No members in this view yet.</strong>Add your team one department at a time.</div>');
@@ -2187,7 +2210,7 @@ function renderAdministration() {
     (member) => member.status === "Pending invitation",
   );
   $("adminStats").innerHTML = [
-    ["Members", db.members.length, "♙", "club profiles"],
+    ["Members", registeredMembers().length, "♙", "registered members"],
     ["Pending", pending.length, "✉", "invitation setup"],
     ["Departments", db.departments.length, "⌘", "skill teams"],
   ]
@@ -2296,7 +2319,7 @@ function renderStructure() {
   $("deptList").innerHTML = dlist
     .map(
       (d) =>
-        `<div class="row clickable${selectedClass("dept", d.name)}" role="button" tabindex="0" data-kind="dept" data-name="${esc(d.name)}"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${db.members.filter((m) => deptsOf(m).includes(d.name)).length} people · Head: ${esc(personName(d.head))}</div></div><span class="row-chevron" aria-hidden="true">›</span></div>`,
+        `<div class="row clickable${selectedClass("dept", d.name)}" role="button" tabindex="0" data-kind="dept" data-name="${esc(d.name)}"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${registeredMembers().filter((m) => deptsOf(m).includes(d.name)).length} people · Head: ${esc(personName(d.head))}</div></div><span class="row-chevron" aria-hidden="true">›</span></div>`,
     )
     .join("");
   let plist =
@@ -2326,7 +2349,7 @@ function structureEntity(kind: string, name: string) {
       leaderLabel: "Head",
       description: d.description || "",
       leader: person(d.head),
-      members: db.members.filter((m) => deptsOf(m).includes(d.name)),
+      members: registeredMembers().filter((m) => deptsOf(m).includes(d.name)),
     };
   }
   const p = db.projects.find((x) => x.name === name);
@@ -2338,7 +2361,7 @@ function structureEntity(kind: string, name: string) {
     leaderLabel: "Lead",
     description: p.description || "",
     leader: person(p.lead),
-    members: db.members.filter((m) => m.projects.includes(p.name)),
+    members: registeredMembers().filter((m) => m.projects.includes(p.name)),
   };
 }
 function structureDetailHtml(kind: string, name: string, withClose: boolean) {
@@ -2469,9 +2492,11 @@ function memberForm(
     projects = db.projects,
     departments = m.departments || [m.department].filter(Boolean),
     roleNow = m.clubRole || "Member";
+  // People who have not created a password yet only get a name and email.
+  const full = Boolean(m.id) && m.status !== "Pending invitation";
   openModal(
     m.id ? "Edit member" : "Add a member",
-    `<form class="form" id="memberForm"><div class="field"><label>Full name</label><input name="name" required value="${esc(m.name)}" placeholder="Member name"></div><div class="field"><label>Email</label><input type="email" name="email" required value="${esc(m.email)}" placeholder="name@university.edu"></div><div class="field full"><label>Position</label><select name="clubRole" id="memberPosition">${options(["Member", "Department Head", "Project Head", "Vice President", "President"], roleNow)}</select><small class="quiet">System access is a separate permission, granted only by the global admin.</small></div><div class="field full hidden" id="extraPositionWrap"><label>Additional position (optional)</label><select name="extraRole" id="extraPosition"><option value="">None</option>${options(["Member", "Department Head", "Project Head"], m.extraRole || "")}</select></div><div class="field full hidden" id="headScopeWrap"><label id="headScopeLabel">Head of</label><select name="headScope" id="headScope"><option value="">Choose one</option></select><small class="quiet">A head role is attached to one department or one project.</small></div><div class="field full hidden" id="memberAssignments"><label>Departments</label><div class="form-checks">${depts.map((d) => `<label class="check"><input type="checkbox" name="departments" value="${esc(d.name)}" ${departments.includes(d.name) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div><label>Projects</label><div class="form-checks">${projectChecks(m.projects || [])}</div><small class="quiet">Members can have any number of department and project assignments, or none.</small></div><div class="note field full">Profiles are created by the system admin. Members do not sign themselves up; registration is linked to the email on this profile.</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">${m.id ? "Save member" : "Add member"}</button></div></form>`,
+    `<form class="form" id="memberForm"><div class="field"><label>Full name</label><input name="name" required value="${esc(m.name)}" placeholder="Member name"></div><div class="field"><label>Email</label><input type="email" name="email" required value="${esc(m.email)}" placeholder="name@university.edu"></div>${full ? `<div class="field full"><label>Position</label><select name="clubRole" id="memberPosition">${options(["Member", "Department Head", "Project Head", "Vice President", "President"], roleNow)}</select><small class="quiet">System access is a separate permission, granted only by the global admin.</small></div><div class="field full hidden" id="extraPositionWrap"><label>Additional position (optional)</label><select name="extraRole" id="extraPosition"><option value="">None</option>${options(["Member", "Department Head", "Project Head"], m.extraRole || "")}</select></div><div class="field full hidden" id="headScopeWrap"><label id="headScopeLabel">Head of</label><select name="headScope" id="headScope"><option value="">Choose one</option></select><small class="quiet">A head role is attached to one department or one project.</small></div><div class="field full hidden" id="memberAssignments"><label>Departments</label><div class="form-checks">${depts.map((d) => `<label class="check"><input type="checkbox" name="departments" value="${esc(d.name)}" ${departments.includes(d.name) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div><label>Projects</label><div class="form-checks">${projectChecks(m.projects || [])}</div><small class="quiet">Members can have any number of department and project assignments, or none.</small></div>` : ""}<div class="note field full">${full ? "Profiles are created by the system admin. Members do not sign themselves up; registration is linked to the email on this profile." : "They are not counted as a member, and are not placed in any department, project or position, until they have created their password. Set those afterwards from the Members page."}</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">${m.id ? "Save member" : "Add member"}</button></div></form>`,
   );
   let sync = () => {
     let primary = $("memberPosition").value,
@@ -2501,13 +2526,15 @@ function memberForm(
         )
         .join("");
   };
-  $("memberPosition").onchange = sync;
-  $("extraPosition").onchange = sync;
-  sync();
+  if (full) {
+    $("memberPosition").onchange = sync;
+    $("extraPosition").onchange = sync;
+    sync();
+  }
   $("memberForm").onsubmit = async (e) => {
     e.preventDefault();
     let f = new FormData(e.target as HTMLFormElement),
-      primary = String(f.get("clubRole") || ""),
+      primary = String(f.get("clubRole") || m.clubRole || "Member"),
       extra = String(f.get("extraRole") || ""),
       headRole = ["Department Head", "Project Head"].includes(primary)
         ? primary
@@ -2916,9 +2943,9 @@ function removeMember(id: string) {
   };
 }
 function toggleSystemAccess(id) {
-  if (!isAdmin()) return;
+  if (!isAdmin() || !isOwner()) return;
   let m = person(id);
-  if (m) {
+  if (m && !m.isClubOwner) {
     m.isClubAdmin = !m.isClubAdmin;
     save();
   }
@@ -2992,64 +3019,18 @@ function importMembersCsv(file) {
           errors.push(`Row ${line}: enter a name and valid email.`);
         if (seen.has(email))
           errors.push(`Row ${line}: duplicate email ${email}.`);
-        if (!validRoles.includes(position))
-          errors.push(`Row ${line}: unknown position “${position}”.`);
-        if (
-          extra &&
-          !["Member", "Department Head", "Project Head"].includes(extra)
-        )
-          errors.push(`Row ${line}: unknown additional position “${extra}”.`);
-        if (
-          ds.some(
-            (x) =>
-              !db.departments.some(
-                (d) => d.name.toLowerCase() === x.toLowerCase(),
-              ),
-          )
-        )
-          errors.push(
-            `Row ${line}: department not found. Use exact department names.`,
-          );
-        if (
-          ps.some(
-            (x) =>
-              !db.projects.some(
-                (p) => p.name.toLowerCase() === x.toLowerCase(),
-              ),
-          )
-        )
-          errors.push(
-            `Row ${line}: project not found. Use exact project names.`,
-          );
-        let headRole = ["Department Head", "Project Head"].includes(position)
-          ? position
-          : extra;
-        if (headRole && !headScope)
-          errors.push(`Row ${line}: a head needs one head_scope.`);
-        if (
-          headRole === "Department Head" &&
-          !db.departments.some(
-            (d) => d.name.toLowerCase() === headScope.toLowerCase(),
-          )
-        )
-          errors.push(`Row ${line}: head_scope must be one department name.`);
-        if (
-          headRole === "Project Head" &&
-          !db.projects.some(
-            (p) => p.name.toLowerCase() === headScope.toLowerCase(),
-          )
-        )
-          errors.push(`Row ${line}: head_scope must be one project name.`);
+        // Position, department and project columns are ignored: people are not placed
+        // anywhere until they have created their password.
         if (email) seen.add(email);
         made.push({
           name,
           email,
-          clubRole: position,
-          extraRole: extra,
-          departments: ds,
-          department: ds[0] || "",
-          projects: ps,
-          headScope,
+          clubRole: "Member",
+          extraRole: "",
+          departments: [],
+          department: "",
+          projects: [],
+          headScope: "",
           status: "Pending invitation",
         });
       });

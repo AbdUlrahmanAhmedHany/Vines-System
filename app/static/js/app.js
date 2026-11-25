@@ -21528,7 +21528,7 @@ ${suffix}`;
     if (openingSessionFor === user.id) return;
     openingSessionFor = user.id;
     const { data: profile, error } = await supabase.from("members").select(
-      "id,name,email,club_role,is_club_admin,status,faculty,study_year,avatar_path,profile_status,phone"
+      "id,name,email,club_role,is_club_admin,is_club_owner,status,faculty,study_year,avatar_path,profile_status"
     ).ilike("email", user.email).maybeSingle();
     if (error || !profile) {
       openingSessionFor = "";
@@ -21554,6 +21554,8 @@ ${suffix}`;
     }
     authUser = user;
     authProfile = profile;
+    const contact = await supabase.from("member_contacts").select("phone").eq("member_id", profile.id).maybeSingle();
+    authProfile.phone = contact.data?.phone || "";
     const [positionsResult, catalogResult, workspace] = await Promise.all([
       supabase.from("member_positions").select("position_id,department_id,project_id").eq("member_id", profile.id),
       supabase.from("positions").select("id,name"),
@@ -21718,7 +21720,7 @@ ${suffix}`;
     if (!supabase) throw new Error("Supabase is not connected.");
     const results = await Promise.all([
       supabase.from("members").select(
-        "id,name,email,club_role,department_id,is_club_admin,status,faculty,study_year,avatar_path,profile_status,phone"
+        "id,name,email,club_role,department_id,is_club_admin,is_club_owner,status,faculty,study_year,avatar_path,profile_status"
       ),
       supabase.from("departments").select("id,name,description,head_member_id"),
       supabase.from("projects").select("id,name,description,project_lead_id,status"),
@@ -21731,7 +21733,8 @@ ${suffix}`;
       supabase.from("task_departments").select("task_id,department_id"),
       supabase.from("task_updates").select("task_id,author_id,note,created_at"),
       supabase.from("member_positions").select("member_id,position_id,department_id,project_id"),
-      supabase.from("positions").select("id,name")
+      supabase.from("positions").select("id,name"),
+      supabase.from("member_contacts").select("member_id,phone")
     ]);
     const failed = results.find((result) => result.error);
     if (failed?.error)
@@ -21747,8 +21750,12 @@ ${suffix}`;
       taskDepartments2,
       updates,
       memberPositions,
-      positions
+      positions,
+      contacts
     ] = results.map((result) => result.data || []);
+    const phoneByMember = new Map(
+      contacts.map((item) => [item.member_id, item.phone || ""])
+    );
     const departmentNames = new Map(
       departments.map((item) => [item.id, item.name])
     );
@@ -21875,12 +21882,13 @@ ${suffix}`;
           ) || "" : "",
           headScope: headScopeByMember.get(item.id) || "",
           isClubAdmin: item.is_club_admin,
+          isClubOwner: Boolean(item.is_club_owner),
           status: item.status,
           faculty: item.faculty || null,
           studyYear: item.study_year || null,
           avatarPath: item.avatar_path || null,
           profileStatus: item.profile_status || "Pending",
-          phone: item.phone || "",
+          phone: phoneByMember.get(item.id) || "",
           departments: memberDeptList,
           department: memberDeptList[0] || "",
           projects: assignmentsByMember.get(item.id) || [],
@@ -22333,13 +22341,16 @@ ${suffix}`;
   function isAdmin() {
     return role === "System admin access";
   }
+  function isOwner() {
+    return Boolean(authProfile?.is_club_owner);
+  }
   function isExecutive() {
     return ["President", "Vice President"].includes(role) || currentPositions.some(
       (position) => ["President", "Vice President"].includes(position)
     );
   }
   function scope() {
-    return selectedPerson || db.members[0]?.id || "";
+    return selectedPerson || registeredMembers()[0]?.id || "";
   }
   function uid() {
     return crypto.randomUUID();
@@ -22366,8 +22377,11 @@ ${suffix}`;
       (position) => ["Department Head", "Project Head"].includes(position)
     );
   }
+  function registeredMembers() {
+    return db.members.filter((m) => m.status !== "Pending invitation");
+  }
   function allowedMembers() {
-    return db.members;
+    return registeredMembers();
   }
   function allowedTasks() {
     return db.tasks;
@@ -22473,7 +22487,7 @@ ${suffix}`;
       db.departments.map((department) => department.name),
       "All departments"
     );
-    let members = db.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+    let members = registeredMembers().map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
     $("deptHead").innerHTML = '<option value="">Choose a member</option>' + members;
     $("projectLead").innerHTML = '<option value="">Choose a member</option>' + members;
     const leader = SHARED_WRITES_ENABLED && (isAdmin() || isExecutive() || isHeadRole());
@@ -22581,12 +22595,12 @@ ${suffix}`;
     const mode = overviewMode();
     const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
     const weekAhead = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
-    let people = db.members;
+    let people = registeredMembers();
     let ts = db.tasks;
     if (mode === "head") {
       const ds = managedDepartments().map((d) => d.name);
       const ps = managedProjects().map((p) => p.name);
-      people = db.members.filter(
+      people = registeredMembers().filter(
         (m) => deptsOf(m).some((d) => ds.includes(d)) || (m.projects || []).some((p) => ps.includes(p))
       );
       ts = db.tasks.filter(
@@ -22634,9 +22648,9 @@ ${suffix}`;
     $("memberList").innerHTML = `<div class="member header"><span>Member</span><span>Departments</span><span>Projects</span><span>Positions</span><span></span></div>` + (list.length ? list.map(
       (m, i) => `<div class="member"><div class="person"><span class="avatar c${i % 4 + 1}${m.avatarPath ? " photo" : ""}"${m.avatarPath ? ` style="background-image:url('${esc(avatarUrl(m.avatarPath))}')"` : ""}>${initials(m.name)}</span><div><div class="row-title">${esc(m.name)}</div><div class="row-sub">${esc(m.email || "Club member")}${m.isClubAdmin ? " \xB7 System admin access" : ""}</div></div></div><div>${deptsOf(m).length ? deptsOf(m).map((d) => `<span class="chip">${esc(d)}</span>`).join(" ") : '<span class="quiet">No department</span>'}</div><div class="items">${m.projects.length ? m.projects.map((p) => `<span class="chip">${esc(p)}</span>`).join("") : '<span class="quiet">No project</span>'}</div><div>${memberRoles(
         m
-      ).map((r) => `<span class="badge role">${esc(r)}</span>`).join(
+      ).map((r) => `<span class="badge role">${esc(r)}</span>`).concat(m.isClubOwner ? ['<span class="badge role">Owner</span>'] : []).join(
         " "
-      )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button><button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}${canRemoveMember(m) ? `<button class="btn danger small" data-action="remove-member" data-id="${m.id}">Remove</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`
+      )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button>${isOwner() && !m.isClubOwner ? `<button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>` : ""}${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}${canRemoveMember(m) ? `<button class="btn danger small" data-action="remove-member" data-id="${m.id}">Remove</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`
     ).join("") : '<div class="empty"><strong>No members in this view yet.</strong>Add your team one department at a time.</div>');
   }
   function renderTasks() {
@@ -22683,7 +22697,7 @@ ${suffix}`;
       (member) => member.status === "Pending invitation"
     );
     $("adminStats").innerHTML = [
-      ["Members", db.members.length, "\u2659", "club profiles"],
+      ["Members", registeredMembers().length, "\u2659", "registered members"],
       ["Pending", pending.length, "\u2709", "invitation setup"],
       ["Departments", db.departments.length, "\u2318", "skill teams"]
     ].map(
@@ -22765,7 +22779,7 @@ END:VCALENDAR\r
     );
     const selectedClass = (kind, name) => structureSelection?.kind === kind && structureSelection.name === name ? " selected" : "";
     $("deptList").innerHTML = dlist.map(
-      (d) => `<div class="row clickable${selectedClass("dept", d.name)}" role="button" tabindex="0" data-kind="dept" data-name="${esc(d.name)}"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${db.members.filter((m) => deptsOf(m).includes(d.name)).length} people \xB7 Head: ${esc(personName(d.head))}</div></div><span class="row-chevron" aria-hidden="true">\u203A</span></div>`
+      (d) => `<div class="row clickable${selectedClass("dept", d.name)}" role="button" tabindex="0" data-kind="dept" data-name="${esc(d.name)}"><div><div class="row-title">${esc(d.name)}</div><div class="row-sub">${registeredMembers().filter((m) => deptsOf(m).includes(d.name)).length} people \xB7 Head: ${esc(personName(d.head))}</div></div><span class="row-chevron" aria-hidden="true">\u203A</span></div>`
     ).join("");
     let plist = isAdmin() || isExecutive() ? db.projects : role === "Project lead" ? db.projects.filter((p) => p.lead === scope()) : isHeadRole() ? allowedProjects() : db.projects;
     $("projectList").innerHTML = plist.map(
@@ -22784,7 +22798,7 @@ END:VCALENDAR\r
         leaderLabel: "Head",
         description: d.description || "",
         leader: person(d.head),
-        members: db.members.filter((m) => deptsOf(m).includes(d.name))
+        members: registeredMembers().filter((m) => deptsOf(m).includes(d.name))
       };
     }
     const p = db.projects.find((x) => x.name === name);
@@ -22796,7 +22810,7 @@ END:VCALENDAR\r
       leaderLabel: "Lead",
       description: p.description || "",
       leader: person(p.lead),
-      members: db.members.filter((m) => m.projects.includes(p.name))
+      members: registeredMembers().filter((m) => m.projects.includes(p.name))
     };
   }
   function structureDetailHtml(kind, name, withClose) {
@@ -22891,9 +22905,10 @@ END:VCALENDAR\r
   }) {
     if (!isAdmin()) return;
     let depts = db.departments, projects = db.projects, departments = m.departments || [m.department].filter(Boolean), roleNow = m.clubRole || "Member";
+    const full = Boolean(m.id) && m.status !== "Pending invitation";
     openModal(
       m.id ? "Edit member" : "Add a member",
-      `<form class="form" id="memberForm"><div class="field"><label>Full name</label><input name="name" required value="${esc(m.name)}" placeholder="Member name"></div><div class="field"><label>Email</label><input type="email" name="email" required value="${esc(m.email)}" placeholder="name@university.edu"></div><div class="field full"><label>Position</label><select name="clubRole" id="memberPosition">${options(["Member", "Department Head", "Project Head", "Vice President", "President"], roleNow)}</select><small class="quiet">System access is a separate permission, granted only by the global admin.</small></div><div class="field full hidden" id="extraPositionWrap"><label>Additional position (optional)</label><select name="extraRole" id="extraPosition"><option value="">None</option>${options(["Member", "Department Head", "Project Head"], m.extraRole || "")}</select></div><div class="field full hidden" id="headScopeWrap"><label id="headScopeLabel">Head of</label><select name="headScope" id="headScope"><option value="">Choose one</option></select><small class="quiet">A head role is attached to one department or one project.</small></div><div class="field full hidden" id="memberAssignments"><label>Departments</label><div class="form-checks">${depts.map((d) => `<label class="check"><input type="checkbox" name="departments" value="${esc(d.name)}" ${departments.includes(d.name) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div><label>Projects</label><div class="form-checks">${projectChecks(m.projects || [])}</div><small class="quiet">Members can have any number of department and project assignments, or none.</small></div><div class="note field full">Profiles are created by the system admin. Members do not sign themselves up; registration is linked to the email on this profile.</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">${m.id ? "Save member" : "Add member"}</button></div></form>`
+      `<form class="form" id="memberForm"><div class="field"><label>Full name</label><input name="name" required value="${esc(m.name)}" placeholder="Member name"></div><div class="field"><label>Email</label><input type="email" name="email" required value="${esc(m.email)}" placeholder="name@university.edu"></div>${full ? `<div class="field full"><label>Position</label><select name="clubRole" id="memberPosition">${options(["Member", "Department Head", "Project Head", "Vice President", "President"], roleNow)}</select><small class="quiet">System access is a separate permission, granted only by the global admin.</small></div><div class="field full hidden" id="extraPositionWrap"><label>Additional position (optional)</label><select name="extraRole" id="extraPosition"><option value="">None</option>${options(["Member", "Department Head", "Project Head"], m.extraRole || "")}</select></div><div class="field full hidden" id="headScopeWrap"><label id="headScopeLabel">Head of</label><select name="headScope" id="headScope"><option value="">Choose one</option></select><small class="quiet">A head role is attached to one department or one project.</small></div><div class="field full hidden" id="memberAssignments"><label>Departments</label><div class="form-checks">${depts.map((d) => `<label class="check"><input type="checkbox" name="departments" value="${esc(d.name)}" ${departments.includes(d.name) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div><label>Projects</label><div class="form-checks">${projectChecks(m.projects || [])}</div><small class="quiet">Members can have any number of department and project assignments, or none.</small></div>` : ""}<div class="note field full">${full ? "Profiles are created by the system admin. Members do not sign themselves up; registration is linked to the email on this profile." : "They are not counted as a member, and are not placed in any department, project or position, until they have created their password. Set those afterwards from the Members page."}</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">${m.id ? "Save member" : "Add member"}</button></div></form>`
     );
     let sync = () => {
       let primary = $("memberPosition").value, secondary = $("extraPosition").value, headRole = ["Department Head", "Project Head"].includes(primary) ? primary : secondary, showExtra = ["President", "Vice President"].includes(primary), isMember = primary === "Member", head2 = $("headScope"), prior = m.headScope || m.department || m.headProject || "";
@@ -22909,12 +22924,14 @@ END:VCALENDAR\r
         (x) => `<option value="${esc(x.name)}" ${x.name === prior ? "selected" : ""}>${esc(x.name)}</option>`
       ).join("");
     };
-    $("memberPosition").onchange = sync;
-    $("extraPosition").onchange = sync;
-    sync();
+    if (full) {
+      $("memberPosition").onchange = sync;
+      $("extraPosition").onchange = sync;
+      sync();
+    }
     $("memberForm").onsubmit = async (e) => {
       e.preventDefault();
-      let f = new FormData(e.target), primary = String(f.get("clubRole") || ""), extra = String(f.get("extraRole") || ""), headRole = ["Department Head", "Project Head"].includes(primary) ? primary : extra, scopeValue = String(f.get("headScope") || ""), memberships = [
+      let f = new FormData(e.target), primary = String(f.get("clubRole") || m.clubRole || "Member"), extra = String(f.get("extraRole") || ""), headRole = ["Department Head", "Project Head"].includes(primary) ? primary : extra, scopeValue = String(f.get("headScope") || ""), memberships = [
         ...e.target.querySelectorAll(
           "[name=departments]:checked"
         )
@@ -23250,9 +23267,9 @@ END:VCALENDAR\r
     };
   }
   function toggleSystemAccess(id) {
-    if (!isAdmin()) return;
+    if (!isAdmin() || !isOwner()) return;
     let m = person(id);
-    if (m) {
+    if (m && !m.isClubOwner) {
       m.isClubAdmin = !m.isClubAdmin;
       save();
     }
@@ -23301,47 +23318,16 @@ END:VCALENDAR\r
           errors.push(`Row ${line}: enter a name and valid email.`);
         if (seen.has(email))
           errors.push(`Row ${line}: duplicate email ${email}.`);
-        if (!validRoles.includes(position))
-          errors.push(`Row ${line}: unknown position \u201C${position}\u201D.`);
-        if (extra && !["Member", "Department Head", "Project Head"].includes(extra))
-          errors.push(`Row ${line}: unknown additional position \u201C${extra}\u201D.`);
-        if (ds.some(
-          (x) => !db.departments.some(
-            (d) => d.name.toLowerCase() === x.toLowerCase()
-          )
-        ))
-          errors.push(
-            `Row ${line}: department not found. Use exact department names.`
-          );
-        if (ps.some(
-          (x) => !db.projects.some(
-            (p) => p.name.toLowerCase() === x.toLowerCase()
-          )
-        ))
-          errors.push(
-            `Row ${line}: project not found. Use exact project names.`
-          );
-        let headRole = ["Department Head", "Project Head"].includes(position) ? position : extra;
-        if (headRole && !headScope)
-          errors.push(`Row ${line}: a head needs one head_scope.`);
-        if (headRole === "Department Head" && !db.departments.some(
-          (d) => d.name.toLowerCase() === headScope.toLowerCase()
-        ))
-          errors.push(`Row ${line}: head_scope must be one department name.`);
-        if (headRole === "Project Head" && !db.projects.some(
-          (p) => p.name.toLowerCase() === headScope.toLowerCase()
-        ))
-          errors.push(`Row ${line}: head_scope must be one project name.`);
         if (email) seen.add(email);
         made.push({
           name,
           email,
-          clubRole: position,
-          extraRole: extra,
-          departments: ds,
-          department: ds[0] || "",
-          projects: ps,
-          headScope,
+          clubRole: "Member",
+          extraRole: "",
+          departments: [],
+          department: "",
+          projects: [],
+          headScope: "",
           status: "Pending invitation"
         });
       });
