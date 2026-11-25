@@ -1416,42 +1416,75 @@ $("memberCsv").onchange = (e) => {
   importMembersCsv(e.target.files[0]);
   e.target.value = "";
 };
+// The overview adapts to who is looking:
+//  full   - system admin, President, Vice President: the whole club
+//  head   - department/project heads: only their own departments and projects
+//  member - everyone else: only the tasks assigned to them, no people count
+function overviewMode(): "full" | "head" | "member" {
+  if (isAdmin() || isExecutive()) return "full";
+  if (managedDepartments().length || managedProjects().length) return "head";
+  return "member";
+}
 function renderHome() {
-  let ms = allowedMembers(),
-    ts = allowedTasks(),
-    open = ts.filter((t) => t.status !== "Done"),
-    late = open.filter(
-      (t) => t.due && t.due < new Date().toISOString().slice(0, 10),
+  const mode = overviewMode();
+  const today = new Date().toISOString().slice(0, 10);
+  const weekAhead = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+  let people: any[] = db.members;
+  let ts: any[] = db.tasks;
+  if (mode === "head") {
+    const ds = managedDepartments().map((d) => d.name);
+    const ps = managedProjects().map((p) => p.name);
+    people = db.members.filter(
+      (m) =>
+        deptsOf(m).some((d) => ds.includes(d)) ||
+        (m.projects || []).some((p) => ps.includes(p)),
     );
-  let soon = open.filter(
-    (t) =>
-      t.due &&
-      t.due <= new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10),
-  );
-  let total = db.members.length || 0;
-  let fillPct = db.tasks.length
-    ? Math.round(
-        (db.tasks.filter((t) => t.status === "Done").length / db.tasks.length) *
-          100,
-      )
-    : 0;
-  $("stats").innerHTML = [
-    ["People", isAdmin() ? total : ms.length, "♙", "in your view"],
+    ts = db.tasks.filter(
+      (t) =>
+        taskDepartments(t).some((d) => ds.includes(d)) ||
+        taskProjects(t).some((p) => ps.includes(p)),
+    );
+  } else if (mode === "member") {
+    ts = db.tasks.filter((t) => t.assignee === authProfile?.id);
+  }
+  const open = ts.filter((t) => t.status !== "Done");
+  const soon = open.filter((t) => t.due && t.due <= weekAhead);
+  const done = ts.filter((t) => t.status === "Done").length;
+  const donePct = ts.length ? Math.round((done / ts.length) * 100) : 0;
+  const scopeNote =
+    mode === "head"
+      ? [
+          ...managedDepartments().map((d) => d.name),
+          ...managedProjects().map((p) => p.name),
+        ].join(" · ")
+      : "";
+  const cards: any[] = [];
+  if (mode !== "member")
+    cards.push([
+      "People",
+      people.length,
+      "♙",
+      mode === "head" ? scopeNote : "across the club",
+    ]);
+  cards.push(
     ["Open tasks", open.length, "✦", "still moving"],
     ["Due this week", soon.length, "◷", "next 7 days"],
-    [
-      "Done",
-      db.tasks.filter((t) => t.status === "Done").length,
-      "✓",
-      `${fillPct}% complete`,
-    ],
-  ]
+    ["Done", done, "✓", `${donePct}% complete`],
+  );
+  $("stats").classList.toggle("three", cards.length === 3);
+  $("stats").innerHTML = cards
     .map(
       ([label, value, icon, foot]) =>
-        `<div class="stat"><div class="stat-label"><span class="stat-ico">${icon}</span>${label}</div><strong>${value}</strong><div class="stat-foot">${foot}</div></div>`,
+        `<div class="stat"><div class="stat-label"><span class="stat-ico">${icon}</span>${label}</div><strong>${value}</strong><div class="stat-foot">${esc(foot)}</div></div>`,
     )
     .join("");
-  let upcoming = [...ts]
+  $("homeTasksTitle").textContent =
+    mode === "member"
+      ? "Your tasks"
+      : mode === "head"
+        ? "Coming up in your team"
+        : "Coming up";
+  const upcoming = [...ts]
     .filter((t) => t.status !== "Done")
     .sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999"))
     .slice(0, 5);
@@ -1459,19 +1492,12 @@ function renderHome() {
     ? upcoming
         .map(
           (t) =>
-            `<div class="row"><div class="task-mini"><span class="task-marker ${t.due && t.due < new Date().toISOString().slice(0, 10) ? "late" : ""}"></span><div><div class="row-title">${esc(t.title)}</div><div class="row-sub">${esc(personName(t.assignee))} · ${esc(taskScopeLabel(t))}</div></div></div><div>${badge(t.status)}<div class="row-sub align-right">${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "No due date"}</div></div></div>`,
+            `<div class="row"><div class="task-mini"><span class="task-marker ${t.due && t.due < today ? "late" : ""}"></span><div><div class="row-title">${esc(t.title)}</div><div class="row-sub">${esc(mode === "member" ? taskScopeLabel(t) : personName(t.assignee) + " · " + taskScopeLabel(t))}</div></div></div><div>${badge(t.status)}<div class="row-sub align-right">${t.due ? new Date(t.due + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "No due date"}</div></div></div>`,
         )
         .join("")
-    : '<div class="empty"><strong>Your next story starts here.</strong>Assign the first task to bring it to life.</div>';
-  $("structureSummary").textContent =
-    `${db.departments.length} departments · ${db.projects.length} projects · ${total} people · ${fillPct}% of tasks done`;
-  $("homeStructure").innerHTML = db.departments
-    .slice(0, 5)
-    .map(
-      (d, i) =>
-        `<div class="structure-row"><span class="structure-flower">${["🌱", "✳", "🎨", "🎥", "📚"][i % 5]}</span><div><strong>${esc(d.name)}</strong><small>${db.members.filter((m) => deptsOf(m).includes(d.name)).length} members · ${esc(personName(d.head))}</small></div></div>`,
-    )
-    .join("");
+    : mode === "member"
+      ? '<div class="empty"><strong>Nothing assigned to you yet.</strong>Tasks your department or project head gives you will show up here.</div>'
+      : '<div class="empty"><strong>Your next story starts here.</strong>Assign the first task to bring it to life.</div>';
 }
 function renderMembers() {
   let q = $("memberSearch").value.toLowerCase(),

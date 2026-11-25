@@ -391,7 +391,7 @@ textarea:focus {
 }
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 1.35fr 0.85fr;
+  grid-template-columns: 1fr;
   gap: 15px;
 }
 .stat-grid {
@@ -399,6 +399,9 @@ textarea:focus {
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-bottom: 15px;
+}
+.stat-grid.three {
+  grid-template-columns: repeat(3, 1fr);
 }
 .stat {
   background: #fff;
