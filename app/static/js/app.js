@@ -22394,6 +22394,14 @@ END:VCALENDAR\r
           if (p.lead === m.id) p.lead = "";
         });
         m.positionNames = [];
+        const oldDepartments = m.departments || [];
+        const oldProjects = m.projects || [];
+        memberships = memberships.filter(
+          (name) => !oldDepartments.includes(name)
+        );
+        assignedProjects = assignedProjects.filter(
+          (name) => !oldProjects.includes(name)
+        );
       }
       if (headRole === "Department Head") {
         let d = db.departments.find((x) => x.name === scopeValue);

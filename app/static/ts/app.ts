@@ -1918,6 +1918,16 @@ function memberForm(
         if (p.lead === m.id) p.lead = "";
       });
       m.positionNames = [];
+      // ...and leave the old departments and projects too. Only memberships
+      // newly ticked in this edit (plus the new head scope below) are kept.
+      const oldDepartments: string[] = m.departments || [];
+      const oldProjects: string[] = m.projects || [];
+      memberships = memberships.filter(
+        (name) => !oldDepartments.includes(name),
+      );
+      assignedProjects = assignedProjects.filter(
+        (name) => !oldProjects.includes(name),
+      );
     }
     if (headRole === "Department Head") {
       let d = db.departments.find((x) => x.name === scopeValue);
