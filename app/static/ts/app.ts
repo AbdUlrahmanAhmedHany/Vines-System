@@ -2081,8 +2081,11 @@ function renderMembers() {
   let q = $("memberSearch").value.toLowerCase(),
     df = $("memberDeptFilter").value,
     pf = $("memberProjectFilter").value;
+  // Only members who have completed invitation setup (including setting a password)
+  // are shown in the club roster. Pending invitations remain in Administration.
   let list = allowedMembers().filter(
     (m) =>
+      m.status === "Active" &&
       (!q ||
         m.name.toLowerCase().includes(q) ||
         m.email.toLowerCase().includes(q)) &&
