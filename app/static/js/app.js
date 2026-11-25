@@ -21509,6 +21509,7 @@ ${suffix}`;
   function showAuthGate(message = "", isError = false) {
     reveal("gate");
     $("loginForm").classList.remove("hidden");
+    $("forgotForm").classList.add("hidden");
     $("setPasswordForm").classList.add("hidden");
     $("authTitle").textContent = "Welcome back";
     $("authCopy").textContent = "Sign in with the email and password from your Vines invitation.";
@@ -21914,18 +21915,38 @@ ${suffix}`;
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) authNotice("That email and password could not sign in.", true);
   });
-  $("forgotPassword").addEventListener("click", async () => {
+  $("forgotPassword").addEventListener("click", () => {
+    $("forgotEmail").value = String($("loginEmail").value || "").trim();
+    $("loginForm").classList.add("hidden");
+    $("forgotForm").classList.remove("hidden");
+    $("authTitle").textContent = "Reset your password";
+    $("authCopy").textContent = "Enter the email on your Vines profile and we will send you a link to choose a new password.";
+    authNotice("");
+    $("forgotEmail").focus();
+  });
+  $("forgotBack").addEventListener("click", () => showAuthGate());
+  $("forgotForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
     if (!supabase) return authNotice("Supabase is not configured yet.", true);
-    const email = String($("loginEmail").value || "").trim();
-    if (!email) return authNotice("Enter your email first.", true);
-    const redirectTo = `${window.location.origin}/?flow=recovery`;
+    const email = String($("forgotEmail").value || "").trim();
+    if (!email || !email.includes("@"))
+      return authNotice("Enter the email address on your profile.", true);
+    const button = $("forgotSend");
+    button.disabled = true;
+    authNotice("Sending\u2026");
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo
+      redirectTo: `${window.location.origin}/?flow=recovery`
     });
-    authNotice(
-      error ? "Could not send a reset email. Check Auth email delivery settings." : "If that account is registered, a password reset email is on its way.",
-      Boolean(error)
-    );
+    button.disabled = false;
+    if (error)
+      authNotice(
+        error.status === 429 ? "Too many requests. Wait a few minutes and try again." : "The reset email could not be sent. The club's email delivery may not be working yet. Ask the system admin to check the Supabase email settings.",
+        true
+      );
+    else
+      authNotice(
+        "If that email belongs to a Vines member, a reset link is on its way. Check your inbox and spam folder."
+      );
   });
   $("setPasswordForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -22669,9 +22690,28 @@ ${suffix}`;
       ([label, value, icon, foot]) => `<div class="stat"><div class="stat-label"><span class="stat-ico">${icon}</span>${label}</div><strong>${value}</strong><div class="stat-foot">${foot}</div></div>`
     ).join("");
     $("pendingInvitations").innerHTML = pending.length ? pending.map(
-      (member) => `<div class="row"><div><div class="row-title">${esc(member.name)}</div><div class="row-sub">${esc(member.email)}</div></div><span class="badge role">Pending invitation</span></div>`
+      (member) => `<div class="row"><div><div class="row-title">${esc(member.name)}</div><div class="row-sub">${esc(member.email)}</div></div><div class="controls"><span class="badge role">Pending invitation</span><button class="btn ghost small" type="button" data-resend="${esc(member.email)}">Resend invitation</button></div></div>`
     ).join("") : '<div class="empty"><strong>Everyone is set up.</strong>New profiles waiting to register will appear here.</div>';
   }
+  $("pendingInvitations").addEventListener("click", async (event) => {
+    const button = event.target.closest(
+      "[data-resend]"
+    );
+    if (!button || !isAdmin()) return;
+    const email = button.dataset.resend || "";
+    button.disabled = true;
+    button.textContent = "Sending\u2026";
+    try {
+      await sendInvitation(email);
+      alert(`Invitation sent to ${email}.`);
+    } catch (error) {
+      alert(
+        `The invitation was not sent: ${error instanceof Error ? error.message : "Check the Supabase email settings."}`
+      );
+    }
+    button.disabled = false;
+    button.textContent = "Resend invitation";
+  });
   function exportCalendar() {
     const tasks = allowedTasks().filter((task) => task.due);
     if (!tasks.length) {
@@ -22926,7 +22966,7 @@ END:VCALENDAR\r
       };
       const isNewMember = !m.id;
       if (m.id) Object.assign(m, data);
-      else db.members.push({ id: uid(), ...data });
+      else db.members.push({ id: uid(), ...data, status: "Pending invitation" });
       const savedMember = m.id ? m : db.members.at(-1);
       if (headRole === "Department Head") {
         let d = db.departments.find((x) => x.name === scopeValue);
@@ -23421,10 +23461,7 @@ END:VCALENDAR\r
   };
   $("exportCalendar").onclick = exportCalendar;
   $("adminAddMember").onclick = () => {
-    if (isAdmin()) {
-      show("members");
-      memberForm();
-    }
+    if (isAdmin()) memberForm();
   };
   $("addDept").onclick = () => {
     let n = $("deptName").value.trim();

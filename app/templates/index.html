@@ -64,6 +64,22 @@
               Forgot password?
             </button>
           </form>
+          <form id="forgotForm" class="auth-form hidden" novalidate>
+            <label for="forgotEmail">Email</label>
+            <input
+              id="forgotEmail"
+              name="email"
+              type="email"
+              autocomplete="email"
+              required
+            />
+            <button class="btn lime auth-submit" type="submit" id="forgotSend">
+              Send reset link
+            </button>
+            <button class="auth-link" id="forgotBack" type="button">
+              Back to sign in
+            </button>
+          </form>
           <form id="setPasswordForm" class="auth-form hidden">
             <label for="newPassword">Create your password</label>
             <input

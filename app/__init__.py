@@ -238,7 +238,15 @@ def create_app() -> Flask:
                     secret,
                     secret,
                 )
-                return jsonify(error="Supabase could not send the invitation. Check Auth email delivery settings."), 502
+                reason = ""
+                if isinstance(result, dict):
+                    reason = str(
+                        result.get("msg") or result.get("error_description") or result.get("message") or ""
+                    ).strip()[:160]
+                detail = f" ({reason})" if reason else ""
+                return jsonify(
+                    error=f"Supabase could not send the invitation email{detail}. Check the Auth email (SMTP) settings in Supabase."
+                ), 502
             return jsonify(ok=True, email=email), 202
         except RuntimeError as error:
             return jsonify(error=str(error)), 503
