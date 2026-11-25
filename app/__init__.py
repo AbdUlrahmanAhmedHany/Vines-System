@@ -171,20 +171,29 @@ def create_app() -> Flask:
             if not email or "@" not in email:
                 return jsonify(error="Enter a valid member email address."), 400
 
-            query = urlencode({"select": "id,email,is_club_admin,status", "email": f"ilike.{email}", "limit": "1"})
-            status, profiles = upstream(
-                f"rest/v1/members?{query}", "GET", secret, secret
+            # Verify the signed-in caller independently from the member being invited.
+            # Looking up the target email here would never find the admin when inviting
+            # somebody else, causing valid administrators to be rejected.
+            admin_email = str(user["email"]).strip().lower()
+            admin_query = urlencode({
+                "select": "id,email,is_club_admin,status",
+                "email": f"ilike.{admin_email}",
+                "limit": "2",
+            })
+            status, admin_profiles = upstream(
+                f"rest/v1/members?{admin_query}", "GET", secret, secret
             )
-            if status != 200 or not isinstance(profiles, list):
-                return jsonify(error="Could not verify the member profile."), 502
+            if status != 200 or not isinstance(admin_profiles, list):
+                return jsonify(error="Could not verify the system admin profile."), 502
             admins = [
-                profile for profile in profiles
-                if str(profile.get("email", "")).lower() == str(user["email"]).lower()
+                profile for profile in admin_profiles
+                if str(profile.get("email", "")).strip().lower() == admin_email
                 and profile.get("is_club_admin") is True
                 and profile.get("status") == "Active"
             ]
-            if not admins:
+            if len(admins) != 1:
                 return jsonify(error="Only the active system admin can send invitations."), 403
+
 
             query = urlencode({"select": "id,email,status", "email": f"ilike.{email}", "limit": "2"})
             status, targets = upstream(f"rest/v1/members?{query}", "GET", secret, secret)
