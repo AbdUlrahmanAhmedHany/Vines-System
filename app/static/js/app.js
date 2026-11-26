@@ -23685,4 +23685,50 @@ END:VCALENDAR\r
     if (event.persisted) window.location.reload();
   });
   void initializeSupabase();
+  (() => {
+    const queue = [];
+    let showing = false;
+    const popup = () => document.getElementById("popup");
+    const looksLikeProblem = (text) => /could not|couldn't|not sent|failed|only the|nothing imported|expired|please fix|enter |choose |do not match|cannot|can't|too many|unable|error|not configured|not active|try again/i.test(
+      text
+    );
+    function next() {
+      const box = popup();
+      const message = queue.shift();
+      if (!box || message === void 0) {
+        showing = false;
+        box?.classList.remove("open");
+        box?.setAttribute("aria-hidden", "true");
+        return;
+      }
+      const problem = looksLikeProblem(message);
+      box.classList.toggle("error", problem);
+      document.getElementById("popupIcon").textContent = problem ? "!" : "\u2713";
+      document.getElementById("popupTitle").textContent = problem ? "Heads up" : "All set";
+      document.getElementById("popupText").textContent = message;
+      box.classList.add("open");
+      box.setAttribute("aria-hidden", "false");
+      document.getElementById("popupOk")?.focus();
+    }
+    window.alert = (message) => {
+      queue.push(String(message ?? ""));
+      if (!showing) {
+        showing = true;
+        next();
+      }
+    };
+    document.addEventListener("DOMContentLoaded", () => {
+      document.getElementById("popupOk")?.addEventListener("click", next);
+      popup()?.addEventListener("click", (event) => {
+        if (event.target === popup()) next();
+      });
+    });
+    document.addEventListener("keydown", (event) => {
+      if (showing && (event.key === "Escape" || event.key === "Enter")) {
+        event.preventDefault();
+        event.stopPropagation();
+        next();
+      }
+    }, true);
+  })();
 })();
