@@ -2189,7 +2189,7 @@ function renderMembers() {
                 m,
               )
                 .map((r) => `<span class="badge role">${esc(r)}</span>`)
-                .concat(m.isClubOwner ? ['<span class="badge role">Owner</span>'] : [])
+                .concat(m.isClubOwner ? ['<span class="badge owner">★ Club owner</span>'] : [])
                 .join(
                   " ",
                 )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button>${isOwner() && !m.isClubOwner ? `<button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>` : ""}${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}${canRemoveMember(m) ? `<button class="btn danger small" data-action="remove-member" data-id="${m.id}">Remove</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`,
