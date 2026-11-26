@@ -219,18 +219,30 @@ def create_app() -> Flask:
             invite_status, result = upstream(
                 invite_path, "POST", secret, secret, {"email": email}
             )
-            if invite_status not in (200, 201):
-                invite_status, result = upstream(
-                    "auth/v1/resend",
-                    "POST",
-                    secret,
-                    secret,
-                    {
-                        "type": "signup",
-                        "email": email,
-                        "options": {"emailRedirectTo": redirect_to},
-                    },
-                )
+            if invite_status == 422:
+                # An earlier invitation already created a login for this email. Supabase
+                # will not send a second invite to it (and "resend" silently sends nothing
+                # to invited users). The profile is still pending, so the unfinished login
+                # holds nothing: clear it and invite again with a fresh link.
+                stale_id = None
+                for page in range(1, 21):
+                    list_status, listing = upstream(
+                        f"auth/v1/admin/users?page={page}&per_page=200", "GET", secret, secret
+                    )
+                    if list_status != 200 or not isinstance(listing, dict):
+                        break
+                    users = listing.get("users") or []
+                    match = next((u for u in users if str(u.get("email", "")).lower() == email), None)
+                    if match:
+                        stale_id = match.get("id")
+                        break
+                    if len(users) < 200:
+                        break
+                if stale_id:
+                    upstream(f"auth/v1/admin/users/{stale_id}", "DELETE", secret, secret)
+                    invite_status, result = upstream(
+                        invite_path, "POST", secret, secret, {"email": email}
+                    )
             if invite_status not in (200, 201):
                 delete_query = urlencode({"token_hash": f"eq.{invite_hash}"})
                 upstream(
