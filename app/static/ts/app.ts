@@ -628,7 +628,42 @@ const linkToken =
 // While someone is choosing a password after such a link, remember it for that
 // user only, so a refresh keeps the screen but a typed-in URL cannot start it.
 const SETUP_KEY = "vines-password-setup";
+// Browser tabs share one sign-in. While a password is being set in one tab, every other
+// Vines tab must leave that new session alone (it cannot read a not-yet-registered
+// profile and would otherwise sign the invitee out from under the setup screen).
+const SETUP_LOCK = "vines-setup-lock";
+let ownsSetupLock = false;
+function lockSetup(userId = "") {
+  ownsSetupLock = true;
+  try {
+    localStorage.setItem(SETUP_LOCK, JSON.stringify({ userId, at: Date.now() }));
+  } catch {
+    /* storage unavailable: other tabs just are not told */
+  }
+}
+function unlockSetup() {
+  if (!ownsSetupLock) return; // another tab's setup is not ours to end
+  ownsSetupLock = false;
+  try {
+    localStorage.removeItem(SETUP_LOCK);
+  } catch {
+    /* nothing to clear */
+  }
+}
+function setupLockedElsewhere(userId: string) {
+  try {
+    const lock = JSON.parse(localStorage.getItem(SETUP_LOCK) || "null");
+    return (
+      Boolean(lock) &&
+      Date.now() - Number(lock.at) < 30 * 60 * 1000 &&
+      (!lock.userId || lock.userId === userId)
+    );
+  } catch {
+    return false;
+  }
+}
 function rememberSetup(flow: string, userId: string) {
+  lockSetup(userId);
   try {
     sessionStorage.setItem(SETUP_KEY, JSON.stringify({ flow, userId }));
   } catch {
@@ -647,6 +682,7 @@ function pendingSetup(userId: string): "invite" | "recovery" | "" {
   }
 }
 function forgetSetup() {
+  unlockSetup();
   try {
     sessionStorage.removeItem(SETUP_KEY);
   } catch {
@@ -688,6 +724,7 @@ async function openWorkspace(user: any) {
     $("setPasswordForm").classList.remove("hidden");
     return;
   }
+  if (setupLockedElsewhere(user.id)) return;
   if (sessionReady && authUser?.id === user.id) return;
   if (openingSessionFor === user.id) return;
   openingSessionFor = user.id;
@@ -858,6 +895,8 @@ async function initializeSupabase() {
         "Supabase settings are not configured for this site yet.",
       );
 
+    // The link's session is about to be stored where every tab can see it.
+    if (!onLoginPage && linkToken && readSetupFlow()) lockSetup();
     supabase = createClient(config.supabaseUrl, config.supabasePublishableKey, {
       auth: {
         persistSession: true,
@@ -880,6 +919,7 @@ async function initializeSupabase() {
         rememberSetup(flow, data.session.user.id);
       } else flow = pendingSetup(data.session.user.id);
     }
+    if (!flow) unlockSetup();
     inviteSetupFlow = flow === "invite";
     passwordSetupFlow = flow !== "";
     if (passwordSetupFlow) {

@@ -21478,7 +21478,33 @@ ${suffix}`;
   }
   var linkToken = new URLSearchParams(window.location.hash.slice(1)).get("access_token") || "";
   var SETUP_KEY = "vines-password-setup";
+  var SETUP_LOCK = "vines-setup-lock";
+  var ownsSetupLock = false;
+  function lockSetup(userId = "") {
+    ownsSetupLock = true;
+    try {
+      localStorage.setItem(SETUP_LOCK, JSON.stringify({ userId, at: Date.now() }));
+    } catch {
+    }
+  }
+  function unlockSetup() {
+    if (!ownsSetupLock) return;
+    ownsSetupLock = false;
+    try {
+      localStorage.removeItem(SETUP_LOCK);
+    } catch {
+    }
+  }
+  function setupLockedElsewhere(userId) {
+    try {
+      const lock = JSON.parse(localStorage.getItem(SETUP_LOCK) || "null");
+      return Boolean(lock) && Date.now() - Number(lock.at) < 30 * 60 * 1e3 && (!lock.userId || lock.userId === userId);
+    } catch {
+      return false;
+    }
+  }
   function rememberSetup(flow, userId) {
+    lockSetup(userId);
     try {
       sessionStorage.setItem(SETUP_KEY, JSON.stringify({ flow, userId }));
     } catch {
@@ -21493,6 +21519,7 @@ ${suffix}`;
     }
   }
   function forgetSetup() {
+    unlockSetup();
     try {
       sessionStorage.removeItem(SETUP_KEY);
     } catch {
@@ -21524,6 +21551,7 @@ ${suffix}`;
       $("setPasswordForm").classList.remove("hidden");
       return;
     }
+    if (setupLockedElsewhere(user.id)) return;
     if (sessionReady && authUser?.id === user.id) return;
     if (openingSessionFor === user.id) return;
     openingSessionFor = user.id;
@@ -21657,6 +21685,7 @@ ${suffix}`;
         throw new Error(
           "Supabase settings are not configured for this site yet."
         );
+      if (!onLoginPage && linkToken && readSetupFlow()) lockSetup();
       supabase = createClient(config.supabaseUrl, config.supabasePublishableKey, {
         auth: {
           persistSession: true,
@@ -21674,6 +21703,7 @@ ${suffix}`;
           rememberSetup(flow, data.session.user.id);
         } else flow = pendingSetup(data.session.user.id);
       }
+      if (!flow) unlockSetup();
       inviteSetupFlow = flow === "invite";
       passwordSetupFlow = flow !== "";
       if (passwordSetupFlow) {
