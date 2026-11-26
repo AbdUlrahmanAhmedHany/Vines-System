@@ -21061,7 +21061,9 @@ ${suffix}`;
   var structureDetailKey = "";
   var structureDetailTimer = 0;
   var animateStructureClose = false;
-  var calendarMonth = new Date((/* @__PURE__ */ new Date()).getFullYear(), (/* @__PURE__ */ new Date()).getMonth(), 1);
+  var calendarDate = /* @__PURE__ */ new Date();
+  var calendarView = "month";
+  var calendarMine = false;
   var supabase = null;
   var authUser = null;
   var authProfile = null;
@@ -22722,21 +22724,115 @@ ${suffix}`;
       return `<div class="task"><div><div class="row-title">${taskTitle}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` \xB7 assigned by ${esc(personName(t.assigner))}` : ""}</div>${t.update ? `<div class="progress-update">\u21B3 ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(taskScopeLabel(t))}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? (/* @__PURE__ */ new Date(t.due + "T00:00:00")).toLocaleDateString(void 0, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManage ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">\uFF0B Update</button>${canDeleteTask() ? `<button class="btn danger small" data-action="delete-task" data-id="${t.id}">Delete</button>` : ""}` : ""}</div></div>`;
     }).join("") : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
   }
+  var ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  var addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  function weekStart(d) {
+    let first = 1;
+    try {
+      const info = new Intl.Locale(navigator.language);
+      const wi = info.getWeekInfo ? info.getWeekInfo() : info.weekInfo;
+      if (wi?.firstDay) first = wi.firstDay % 7;
+    } catch {
+    }
+    const back = (d.getDay() - first + 7) % 7;
+    return addDays(d, -back);
+  }
+  function calendarTaskMap() {
+    const map = /* @__PURE__ */ new Map();
+    allowedTasks().filter(
+      (task) => task.due && (!calendarMine || task.assignee === authProfile?.id)
+    ).sort((a, b) => a.title.localeCompare(b.title)).forEach((task) => {
+      if (!map.has(task.due)) map.set(task.due, []);
+      map.get(task.due).push(task);
+    });
+    return map;
+  }
+  var isOverdue = (task) => task.due && task.status !== "Done" && task.due < ymd(/* @__PURE__ */ new Date());
+  function calChip(task) {
+    return `<button type="button" class="cal-chip ${statusClass(task.status)}${isOverdue(task) ? " overdue" : ""}" data-cal-task="${task.id}" title="${esc(task.title)}"><span>${esc(task.title)}</span></button>`;
+  }
+  function calCard(task, full = false) {
+    const who = personName(task.assignee);
+    return `<button type="button" class="cal-event ${statusClass(task.status)}${isOverdue(task) ? " overdue" : ""}" data-cal-task="${task.id}"><strong>${esc(task.title)}</strong><span class="cal-event-sub">${esc(taskScopeLabel(task))}</span>${full && task.description ? `<span class="cal-event-desc">${esc(task.description)}</span>` : ""}<span class="cal-event-foot"><span class="avatar c2">${initials(who)}</span>${esc(who)}${isOverdue(task) ? "<em>Overdue</em>" : ""}</span></button>`;
+  }
   function renderCalendar() {
-    const year = calendarMonth.getFullYear();
-    const month = calendarMonth.getMonth();
-    $("calendarMonthLabel").textContent = calendarMonth.toLocaleDateString(
-      void 0,
-      { month: "long", year: "numeric" }
+    const map = calendarTaskMap();
+    const todayKey = ymd(/* @__PURE__ */ new Date());
+    const anchor = calendarDate;
+    let label = "";
+    let html = "";
+    const dayName = (d, style = "short") => d.toLocaleDateString(void 0, { weekday: style });
+    if (calendarView === "month") {
+      const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+      label = first.toLocaleDateString(void 0, { month: "long", year: "numeric" });
+      const start = weekStart(first);
+      const weeks = Math.ceil(
+        ((first.getTime() - start.getTime()) / 864e5 + new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).getDate()) / 7
+      );
+      html = `<div class="cal-grid month"><div class="cal-head">${Array.from({ length: 7 }, (_, i) => `<div>${esc(dayName(addDays(start, i)))}</div>`).join("")}</div>`;
+      for (let w = 0; w < weeks; w++) {
+        html += '<div class="cal-week">';
+        for (let i = 0; i < 7; i++) {
+          const day = addDays(start, w * 7 + i);
+          const key = ymd(day);
+          const items = map.get(key) || [];
+          const other = day.getMonth() !== anchor.getMonth();
+          html += `<div class="cal-cell${other ? " other" : ""}${key === todayKey ? " today" : ""}"><button type="button" class="cal-num" data-cal-day="${key}">${day.getDate()}</button>${items.slice(0, 3).map(calChip).join("")}${items.length > 3 ? `<button type="button" class="cal-more" data-cal-day="${key}">+${items.length - 3} more</button>` : ""}</div>`;
+        }
+        html += "</div>";
+      }
+      html += "</div>";
+    } else if (calendarView === "week") {
+      const start = weekStart(anchor);
+      const end = addDays(start, 6);
+      label = `${start.toLocaleDateString(void 0, { day: "numeric", month: "short" })} \u2013 ${end.toLocaleDateString(void 0, { day: "numeric", month: "short", year: "numeric" })}`;
+      html = '<div class="cal-grid weekview">';
+      for (let i = 0; i < 7; i++) {
+        const day = addDays(start, i);
+        const key = ymd(day);
+        const items = map.get(key) || [];
+        html += `<div class="cal-col${key === todayKey ? " today" : ""}"><button type="button" class="cal-colhead" data-cal-day="${key}"><span>${esc(dayName(day))}</span><b>${day.getDate()}</b></button><div class="cal-colbody">${items.length ? items.map((t) => calCard(t)).join("") : '<div class="cal-none">Nothing due</div>'}</div></div>`;
+      }
+      html += "</div>";
+    } else {
+      label = anchor.toLocaleDateString(void 0, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+      const items = map.get(ymd(anchor)) || [];
+      html = `<div class="cal-dayview${ymd(anchor) === todayKey ? " today" : ""}">${items.length ? items.map((t) => calCard(t, true)).join("") : '<div class="empty"><strong>Nothing due this day.</strong>Tasks with this due date will appear here.</div>'}</div>`;
+    }
+    $("calendarMonthLabel").textContent = label;
+    $("calendarBoard").innerHTML = html;
+    document.querySelectorAll("[data-cal-view]").forEach((button) => {
+      const on = button.dataset.calView === calendarView;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+    });
+    if (!map.size)
+      $("calendarBoard").insertAdjacentHTML(
+        "beforeend",
+        `<div class="cal-hint">${calendarMine ? "You have no tasks with deadlines." : "No tasks with deadlines yet."}</div>`
+      );
+  }
+  function showCalendarTask(id) {
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return;
+    const canManage = canManageTask(task);
+    const canUpdate = Boolean(canManage || task.assignee === authProfile?.id);
+    const dueText = (/* @__PURE__ */ new Date(`${task.due}T00:00:00`)).toLocaleDateString(void 0, {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric"
+    });
+    openModal(
+      task.title,
+      `<div class="cal-detail"><div class="cal-detail-badges">${badge(task.status)}<span class="badge ${task.priority === "Urgent" ? "urgent" : task.priority === "High" ? "high" : ""}">${esc(task.priority)}</span>${isOverdue(task) ? '<span class="badge urgent">Overdue</span>' : ""}</div><div class="cal-detail-when">\u25F7 Due ${esc(dueText)}</div><h4>Description</h4><p class="cal-detail-desc">${task.description ? esc(task.description) : '<span class="quiet">No description was added.</span>'}</p><dl class="cal-detail-meta"><div><dt>Assigned to</dt><dd>${task.assignee ? esc(personName(task.assignee)) : "Unassigned"}</dd></div><div><dt>Assigned by</dt><dd>${task.assigner ? esc(personName(task.assigner)) : "\u2014"}</dd></div><div><dt>Project / department</dt><dd>${esc(taskScopeLabel(task))}</dd></div></dl>${task.update ? `<h4>Latest update</h4><p class="cal-detail-desc">${esc(task.update)}</p>` : ""}<div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Close</button>${SHARED_WRITES_ENABLED && canManage ? `<button type="button" class="btn ghost" data-action="assign-task" data-id="${task.id}">${task.assignee ? "Reassign" : "Assign"}</button>` : ""}${SHARED_WRITES_ENABLED && canUpdate ? `<button type="button" class="btn lime" data-action="add-update" data-id="${task.id}">\uFF0B Update</button>` : ""}</div></div>`
     );
-    const tasks = allowedTasks().filter((task) => {
-      if (!task.due) return false;
-      const due = /* @__PURE__ */ new Date(`${task.due}T00:00:00`);
-      return due.getFullYear() === year && due.getMonth() === month;
-    }).sort((a, b) => a.due.localeCompare(b.due));
-    $("calendarList").innerHTML = tasks.length ? tasks.map(
-      (task) => `<div class="row"><div><div class="row-title">${esc(task.title)}</div><div class="row-sub">${esc(taskScopeLabel(task))} \xB7 ${esc(personName(task.assignee))}</div></div><div>${(/* @__PURE__ */ new Date(`${task.due}T00:00:00`)).toLocaleDateString(void 0, { weekday: "short", month: "short", day: "numeric" })}</div><div>${badge(task.status)}</div></div>`
-    ).join("") : '<div class="empty"><strong>No deadlines this month.</strong>Tasks with due dates will appear here.</div>';
+  }
+  function shiftCalendar(direction) {
+    if (calendarView === "month")
+      calendarDate = new Date(calendarDate.getFullYear(), calendarDate.getMonth() + direction, 1);
+    else calendarDate = addDays(calendarDate, direction * (calendarView === "week" ? 7 : 1));
+    renderCalendar();
   }
   function renderAdministration() {
     if (!isAdmin()) return;
@@ -23609,22 +23705,33 @@ END:VCALENDAR\r
   $("taskStatusFilter").onchange = renderTasks;
   $("taskProjectFilter").onchange = renderTasks;
   $("taskDepartmentFilter").onchange = renderTasks;
-  $("calendarPrev").onclick = () => {
-    calendarMonth = new Date(
-      calendarMonth.getFullYear(),
-      calendarMonth.getMonth() - 1,
-      1
-    );
+  $("calendarPrev").onclick = () => shiftCalendar(-1);
+  $("calendarNext").onclick = () => shiftCalendar(1);
+  $("calendarToday").onclick = () => {
+    calendarDate = /* @__PURE__ */ new Date();
     renderCalendar();
   };
-  $("calendarNext").onclick = () => {
-    calendarMonth = new Date(
-      calendarMonth.getFullYear(),
-      calendarMonth.getMonth() + 1,
-      1
-    );
+  $("calendarMine").onchange = () => {
+    calendarMine = $("calendarMine").checked;
     renderCalendar();
   };
+  document.querySelectorAll("[data-cal-view]").forEach((button) => {
+    button.onclick = () => {
+      calendarView = button.dataset.calView;
+      renderCalendar();
+    };
+  });
+  $("calendarBoard").addEventListener("click", (event) => {
+    const target = event.target;
+    const taskButton = target.closest("[data-cal-task]");
+    if (taskButton) return showCalendarTask(taskButton.dataset.calTask || "");
+    const dayButton = target.closest("[data-cal-day]");
+    if (dayButton) {
+      calendarDate = /* @__PURE__ */ new Date(`${dayButton.dataset.calDay}T00:00:00`);
+      calendarView = "day";
+      renderCalendar();
+    }
+  });
   $("exportCalendar").onclick = exportCalendar;
   $("adminAddMember").onclick = () => {
     if (isAdmin()) memberForm();

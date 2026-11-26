@@ -418,7 +418,7 @@
             <div>
               <h2>Deadlines, in view.</h2>
               <p>
-                Only your visible tasks appear. Export the deadlines to Google
+                Tasks sit on their due dates. Click one to read its description. Export the deadlines to Google
                 or Apple Calendar.
               </p>
             </div>
@@ -428,29 +428,26 @@
               </button>
             </div>
           </div>
-          <div class="card">
-            <div class="card-head">
-              <div class="card-title">
-                <span class="card-icon">◷</span>
-                <h3 id="calendarMonthLabel"></h3>
+          <div class="card cal-card">
+            <div class="cal-toolbar">
+              <div class="cal-nav">
+                <button class="btn ghost small" id="calendarToday">Today</button>
+                <button class="btn ghost small" id="calendarPrev" aria-label="Previous">←</button>
+                <button class="btn ghost small" id="calendarNext" aria-label="Next">→</button>
+                <h3 id="calendarMonthLabel" aria-live="polite"></h3>
               </div>
-              <div class="controls">
-                <button
-                  class="btn ghost small"
-                  id="calendarPrev"
-                  aria-label="Previous month"
+              <div class="cal-tools">
+                <label class="cal-mine"
+                  ><input type="checkbox" id="calendarMine" /> My tasks</label
                 >
-                  ←</button
-                ><button
-                  class="btn ghost small"
-                  id="calendarNext"
-                  aria-label="Next month"
-                >
-                  →
-                </button>
+                <div class="cal-views" role="group" aria-label="Calendar view">
+                  <button type="button" data-cal-view="day">Day</button>
+                  <button type="button" data-cal-view="week">Week</button>
+                  <button type="button" data-cal-view="month">Month</button>
+                </div>
               </div>
             </div>
-            <div class="structure-list spaced-12" id="calendarList"></div>
+            <div id="calendarBoard"></div>
           </div>
         </section>
         <section class="view" id="administration">
