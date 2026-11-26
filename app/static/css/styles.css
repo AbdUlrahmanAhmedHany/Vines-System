@@ -605,10 +605,6 @@ textarea:focus {
   background: #edf3e9;
   color: #3d7450;
 }
-.badge.owner {
-  background: var(--forest);
-  color: var(--lime);
-}
 .empty {
   padding: 30px 18px;
   text-align: center;
