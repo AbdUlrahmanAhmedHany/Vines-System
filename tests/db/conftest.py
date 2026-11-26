@@ -32,6 +32,7 @@ MIGRATIONS = [
     "lock-rls-auto-enable.sql",
     "pending-members-plan.sql",
     "executive-permissions-alignment.sql",
+    "task-subtasks-system.sql",
 ]
 MIGRATIONS += [p.name for p in sorted((SHARED / "migrations").glob("*.sql"))] if (SHARED / "migrations").exists() else []
 
@@ -95,6 +96,11 @@ class World:
             try:
                 cur = conn.execute(sql, params)
                 rows = cur.fetchall() if cur.description else []
+                # Row-level security hides rows silently, so an UPDATE/DELETE that touched nothing
+                # was refused as far as these tests are concerned.
+                if sql.lstrip().lower().startswith(("update", "delete")) and cur.rowcount == 0:
+                    conn.execute("rollback to savepoint attempt")
+                    return False, "no rows affected (blocked by row-level security)"
                 conn.execute("release savepoint attempt")
                 return True, rows
             except psycopg.Error as exc:
@@ -167,7 +173,7 @@ class World:
         for d in departments:
             self.conn.execute("insert into public.task_departments(task_id, department_id) values (%s,%s)", (tid, d))
         if assignee:
-            self.force("update public.tasks set assignee_id=%s, status='Pending' where id=%s", (self.members[assignee]["id"], tid))
+            self.force("update public.tasks set assignee_id=%s, status='Not Started' where id=%s", (self.members[assignee]["id"], tid))
         return tid
 
 

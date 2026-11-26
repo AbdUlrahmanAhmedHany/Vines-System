@@ -68,16 +68,18 @@ def test_executives_assign_across_scopes(club):
         assert ok, who
 
 
-def test_assignee_cannot_mark_done_but_project_head_can(club):
+def test_only_authorised_people_can_complete_a_task(club):
     tid = club.task("Film task", projects=[club.proj_film], assignee="designer")
-    ok, err = club.try_sql("designer", "update public.tasks set status='Done' where id=%s", (tid,))
-    assert not ok and "mark a task done" in err.lower()
-    assert club.try_sql("filmhead", "update public.tasks set status='Done' where id=%s", (tid,))[0]
+    # A member who is neither the responsible person nor a head cannot complete it.
+    ok, err = club.try_sql("editor", "update public.tasks set status='Completed' where id=%s", (tid,))
+    assert not ok
+    # The linked project head and the responsible assignee (section 10 of the spec) can.
+    assert club.try_sql("filmhead", "update public.tasks set status='Completed' where id=%s", (tid,))[0]
 
 
 def test_assignee_can_report_progress(club):
     tid = club.task("Film task", projects=[club.proj_film], assignee="designer")
-    assert club.try_sql("designer", "update public.tasks set status='In progress' where id=%s", (tid,))[0]
+    assert club.try_sql("designer", "update public.tasks set status='In Progress' where id=%s", (tid,))[0]
 
 
 def test_task_visibility(club):
