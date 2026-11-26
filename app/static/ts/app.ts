@@ -1,3 +1,4 @@
+import { addDays, esc, parseCsv, ymd } from "./lib";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const KEY_PREFIX = "vines-club-hub-v1:";
@@ -1685,15 +1686,6 @@ async function sendInvitation(email: string) {
   if (!response.ok)
     throw new Error(result.error || "Could not send the invitation.");
 }
-function esc(x = "") {
-  return String(x).replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ],
-  );
-}
 function person(id) {
   return db.members.find((m) => m.id === id);
 }
@@ -2244,10 +2236,6 @@ function renderTasks() {
       : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
 }
 
-const ymd = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const addDays = (d: Date, n: number) =>
-  new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 function weekStart(d: Date) {
   let first = 1; // Monday unless the browser says otherwise
   try {
@@ -3225,32 +3213,6 @@ function toggleSystemAccess(id) {
     m.isClubAdmin = !m.isClubAdmin;
     save();
   }
-}
-function parseCsv(text) {
-  let rows = [],
-    row = [],
-    cell = "",
-    quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    let c = text[i];
-    if (c === '"' && quoted && text[i + 1] === '"') {
-      cell += '"';
-      i++;
-    } else if (c === '"') quoted = !quoted;
-    else if (c === "," && !quoted) {
-      row.push(cell);
-      cell = "";
-    } else if ((c === "\n" || c === "\r") && !quoted) {
-      if (c === "\r" && text[i + 1] === "\n") i++;
-      row.push(cell);
-      if (row.some((v) => v.trim())) rows.push(row);
-      row = [];
-      cell = "";
-    } else cell += c;
-  }
-  row.push(cell);
-  if (row.some((v) => v.trim())) rows.push(row);
-  return rows;
 }
 function importMembersCsv(file) {
   if (!file || !isAdmin()) return;

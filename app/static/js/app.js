@@ -1,4 +1,37 @@
 (() => {
+  // app/static/ts/lib.ts
+  function esc(x = "") {
+    return String(x).replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+    );
+  }
+  var ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  var addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  function parseCsv(text) {
+    let rows = [], row = [], cell = "", quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      let c = text[i];
+      if (c === '"' && quoted && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') quoted = !quoted;
+      else if (c === "," && !quoted) {
+        row.push(cell);
+        cell = "";
+      } else if ((c === "\n" || c === "\r") && !quoted) {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(cell);
+        if (row.some((v) => v.trim())) rows.push(row);
+        row = [];
+        cell = "";
+      } else cell += c;
+    }
+    row.push(cell);
+    if (row.some((v) => v.trim())) rows.push(row);
+    return rows;
+  }
+
   // node_modules/@supabase/supabase-js/dist/tracingRegistry.mjs
   var EXTRACTOR_KEY = /* @__PURE__ */ Symbol.for("@supabase/supabase-js.traceContextExtractor");
   function getTraceContextExtractor() {
@@ -22344,12 +22377,6 @@ ${suffix}`;
     if (!response.ok)
       throw new Error(result.error || "Could not send the invitation.");
   }
-  function esc(x = "") {
-    return String(x).replace(
-      /[&<>"']/g,
-      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-    );
-  }
   function person(id) {
     return db.members.find((m) => m.id === id);
   }
@@ -22724,8 +22751,6 @@ ${suffix}`;
       return `<div class="task"><div><div class="row-title">${taskTitle}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` \xB7 assigned by ${esc(personName(t.assigner))}` : ""}</div>${t.update ? `<div class="progress-update">\u21B3 ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(taskScopeLabel(t))}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? (/* @__PURE__ */ new Date(t.due + "T00:00:00")).toLocaleDateString(void 0, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManage ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">\uFF0B Update</button>${canDeleteTask() ? `<button class="btn danger small" data-action="delete-task" data-id="${t.id}">Delete</button>` : ""}` : ""}</div></div>`;
     }).join("") : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
   }
-  var ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  var addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
   function weekStart(d) {
     let first = 1;
     try {
@@ -23516,29 +23541,6 @@ END:VCALENDAR\r
       m.isClubAdmin = !m.isClubAdmin;
       save();
     }
-  }
-  function parseCsv(text) {
-    let rows = [], row = [], cell = "", quoted = false;
-    for (let i = 0; i < text.length; i++) {
-      let c = text[i];
-      if (c === '"' && quoted && text[i + 1] === '"') {
-        cell += '"';
-        i++;
-      } else if (c === '"') quoted = !quoted;
-      else if (c === "," && !quoted) {
-        row.push(cell);
-        cell = "";
-      } else if ((c === "\n" || c === "\r") && !quoted) {
-        if (c === "\r" && text[i + 1] === "\n") i++;
-        row.push(cell);
-        if (row.some((v) => v.trim())) rows.push(row);
-        row = [];
-        cell = "";
-      } else cell += c;
-    }
-    row.push(cell);
-    if (row.some((v) => v.trim())) rows.push(row);
-    return rows;
   }
   function importMembersCsv(file) {
     if (!file || !isAdmin()) return;
