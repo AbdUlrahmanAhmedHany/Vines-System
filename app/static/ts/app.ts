@@ -954,6 +954,7 @@ async function loadSharedWorkspace() {
       .select("member_id,position_id,department_id,project_id"),
     supabase.from("positions").select("id,name"),
     supabase.from("member_contacts").select("member_id,phone"),
+    supabase.from("pending_plans").select("member_id,plan,expires_at"),
   ]);
   const failed = results.find((result) => result.error);
   if (failed?.error)
@@ -971,7 +972,11 @@ async function loadSharedWorkspace() {
     memberPositions,
     positions,
     contacts,
+    pendingPlans,
   ] = results.map((result) => result.data || []) as any[][];
+  const planByMember = new Map<string, any>(
+    pendingPlans.map((item: any) => [item.member_id, item]),
+  );
   const phoneByMember = new Map<string, string>(
     contacts.map((item: any) => [item.member_id, item.phone || ""]),
   );
@@ -1123,6 +1128,8 @@ async function loadSharedWorkspace() {
         avatarPath: item.avatar_path || null,
         profileStatus: item.profile_status || "Pending",
         phone: phoneByMember.get(item.id) || "",
+        plan: planByMember.get(item.id)?.plan || null,
+        planExpires: planByMember.get(item.id)?.expires_at || null,
         departments: memberDeptList,
         department: memberDeptList[0] || "",
         projects: assignmentsByMember.get(item.id) || [],
@@ -1607,6 +1614,21 @@ function save(): Promise<boolean> {
   return saveQueue.then(() => succeeded);
 }
 
+// Where a not-yet-registered person will be placed once they create a password.
+// Kept in an admin-only table; it does not touch any department, project or member list.
+async function savePendingPlan(member: any) {
+  if (!supabase || !member?.id || !member.plan) return;
+  const { error } = await supabase
+    .from("pending_plans")
+    .upsert({ member_id: member.id, plan: member.plan }, { onConflict: "member_id" });
+  if (error) throw new Error(`Could not save the planned role: ${error.message}`);
+  // The database starts the 14-day window on first save; mirror it until the next reload.
+  const live = db.members.find((m: any) => m.id === member.id) || member;
+  if (!live.planExpires)
+    live.planExpires = member.planExpires = new Date(
+      Date.now() + 14 * 86400000,
+    ).toISOString();
+}
 async function sendInvitation(email: string) {
   const { data } = await supabase!.auth.getSession();
   const response = await fetch("/api/invitations", {
@@ -2222,14 +2244,44 @@ function renderAdministration() {
   $("pendingInvitations").innerHTML = pending.length
     ? pending
         .map(
-          (member) =>
-            `<div class="row"><div><div class="row-title">${esc(member.name)}</div><div class="row-sub">${esc(member.email)}</div></div><div class="controls"><span class="badge role">Pending invitation</span><button class="btn ghost small" type="button" data-resend="${esc(member.email)}">Resend invitation</button></div></div>`,
+          (member) => {
+            const plan = member.plan || {};
+            const planned = [
+              plan.clubRole && plan.clubRole !== "Member" ? plan.clubRole : "",
+              plan.extraRole || "",
+              plan.headScope ? `of ${plan.headScope}` : "",
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            const extras = [
+              ...(plan.departments || []),
+              ...(plan.projects || []),
+            ].join(", ");
+            const left = member.planExpires
+              ? Math.max(
+                  0,
+                  Math.ceil(
+                    (new Date(member.planExpires).getTime() - Date.now()) /
+                      86400000,
+                  ),
+                )
+              : null;
+            return `<div class="row"><div><div class="row-title">${esc(member.name)}</div><div class="row-sub">${esc(member.email)}</div><div class="row-sub">Planned: ${esc(planned || "Member")}${extras ? ` · ${esc(extras)}` : ""}${left === null ? "" : ` · removed in ${left} day${left === 1 ? "" : "s"} if not accepted`}</div></div><div class="controls"><span class="badge role">Pending invitation</span><button class="btn ghost small" type="button" data-edit-pending="${esc(member.id)}">Edit plan</button><button class="btn ghost small" type="button" data-resend="${esc(member.email)}">Resend invitation</button></div></div>`;
+          },
         )
         .join("")
     : '<div class="empty"><strong>Everyone is set up.</strong>New profiles waiting to register will appear here.</div>';
 }
 
 $("pendingInvitations").addEventListener("click", async (event) => {
+  const editButton = (event.target as HTMLElement).closest<HTMLButtonElement>(
+    "[data-edit-pending]",
+  );
+  if (editButton && isAdmin()) {
+    const target = person(editButton.dataset.editPending || "");
+    if (target) memberForm(target);
+    return;
+  }
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
     "[data-resend]",
   );
@@ -2239,7 +2291,11 @@ $("pendingInvitations").addEventListener("click", async (event) => {
   button.textContent = "Sending…";
   try {
     await sendInvitation(email);
+    const again = db.members.find((m: any) => m.email.toLowerCase() === email.toLowerCase());
+    if (again) again.planExpires = new Date(Date.now() + 14 * 86400000).toISOString();
     alert(`Invitation sent to ${email}.`);
+    renderAdministration();
+    return;
   } catch (error) {
     alert(
       `The invitation was not sent: ${error instanceof Error ? error.message : "Check the Supabase email settings."}`,
@@ -2488,15 +2544,27 @@ function memberForm(
   },
 ) {
   if (!isAdmin()) return;
+  // Someone who has not created a password yet is only planned: the position,
+  // departments and projects are stored as a plan and applied when they register.
+  const pending = !m.id || m.status === "Pending invitation";
+  const src: any = pending
+    ? {
+        clubRole: "Member",
+        extraRole: "",
+        headScope: "",
+        departments: [],
+        projects: [],
+        ...(m.plan || {}),
+      }
+    : m;
   let depts = db.departments,
     projects = db.projects,
-    departments = m.departments || [m.department].filter(Boolean),
-    roleNow = m.clubRole || "Member";
-  // People who have not created a password yet only get a name and email.
-  const full = Boolean(m.id) && m.status !== "Pending invitation";
+    departments = src.departments || [src.department].filter(Boolean),
+    roleNow = src.clubRole || "Member";
+  const full = true;
   openModal(
     m.id ? "Edit member" : "Add a member",
-    `<form class="form" id="memberForm"><div class="field"><label>Full name</label><input name="name" required value="${esc(m.name)}" placeholder="Member name"></div><div class="field"><label>Email</label><input type="email" name="email" required value="${esc(m.email)}" placeholder="name@university.edu"></div>${full ? `<div class="field full"><label>Position</label><select name="clubRole" id="memberPosition">${options(["Member", "Department Head", "Project Head", "Vice President", "President"], roleNow)}</select><small class="quiet">System access is a separate permission, granted only by the global admin.</small></div><div class="field full hidden" id="extraPositionWrap"><label>Additional position (optional)</label><select name="extraRole" id="extraPosition"><option value="">None</option>${options(["Member", "Department Head", "Project Head"], m.extraRole || "")}</select></div><div class="field full hidden" id="headScopeWrap"><label id="headScopeLabel">Head of</label><select name="headScope" id="headScope"><option value="">Choose one</option></select><small class="quiet">A head role is attached to one department or one project.</small></div><div class="field full hidden" id="memberAssignments"><label>Departments</label><div class="form-checks">${depts.map((d) => `<label class="check"><input type="checkbox" name="departments" value="${esc(d.name)}" ${departments.includes(d.name) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div><label>Projects</label><div class="form-checks">${projectChecks(m.projects || [])}</div><small class="quiet">Members can have any number of department and project assignments, or none.</small></div>` : ""}<div class="note field full">${full ? "Profiles are created by the system admin. Members do not sign themselves up; registration is linked to the email on this profile." : "They are not counted as a member, and are not placed in any department, project or position, until they have created their password. Set those afterwards from the Members page."}</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">${m.id ? "Save member" : "Add member"}</button></div></form>`,
+    `<form class="form" id="memberForm"><div class="field"><label>Full name</label><input name="name" required value="${esc(m.name)}" placeholder="Member name"></div><div class="field"><label>Email</label><input type="email" name="email" required value="${esc(m.email)}" placeholder="name@university.edu"></div>${full ? `<div class="field full"><label>Position</label><select name="clubRole" id="memberPosition">${options(["Member", "Department Head", "Project Head", "Vice President", "President"], roleNow)}</select><small class="quiet">${pending ? "Planned position: it takes effect, and shows anywhere, only after they create a password." : "System access is a separate permission, granted only by the global admin."}</small></div><div class="field full hidden" id="extraPositionWrap"><label>Additional position (optional)</label><select name="extraRole" id="extraPosition"><option value="">None</option>${options(["Member", "Department Head", "Project Head"], src.extraRole || "")}</select></div><div class="field full hidden" id="headScopeWrap"><label id="headScopeLabel">Head of</label><select name="headScope" id="headScope"><option value="">Choose one</option></select><small class="quiet">A head role is attached to one department or one project.</small></div><div class="field full hidden" id="memberAssignments"><label>Departments</label><div class="form-checks">${depts.map((d) => `<label class="check"><input type="checkbox" name="departments" value="${esc(d.name)}" ${departments.includes(d.name) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div><label>Projects</label><div class="form-checks">${projectChecks(src.projects || [])}</div><small class="quiet">Members can have any number of department and project assignments, or none.</small></div>` : ""}<div class="note field full">${pending ? "Not counted or shown anywhere as a member, head or team member until they create a password. Unaccepted invitations are removed after 14 days." : "Profiles are created by the system admin. Members do not sign themselves up; registration is linked to the email on this profile."}</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">${m.id ? "Save member" : "Add member"}</button></div></form>`,
   );
   let sync = () => {
     let primary = $("memberPosition").value,
@@ -2507,7 +2575,7 @@ function memberForm(
       showExtra = ["President", "Vice President"].includes(primary),
       isMember = primary === "Member",
       head = $("headScope"),
-      prior = m.headScope || m.department || m.headProject || "";
+      prior = src.headScope || src.department || src.headProject || "";
     $("extraPositionWrap").classList.toggle("hidden", !showExtra);
     $("memberAssignments").classList.toggle(
       "hidden",
@@ -2534,7 +2602,7 @@ function memberForm(
   $("memberForm").onsubmit = async (e) => {
     e.preventDefault();
     let f = new FormData(e.target as HTMLFormElement),
-      primary = String(f.get("clubRole") || m.clubRole || "Member"),
+      primary = String(f.get("clubRole") || src.clubRole || "Member"),
       extra = String(f.get("extraRole") || ""),
       headRole = ["Department Head", "Project Head"].includes(primary)
         ? primary
@@ -2552,6 +2620,59 @@ function memberForm(
       ].map((x) => x.value);
     if (headRole && !scopeValue) {
       alert("Choose the department or project for this head position.");
+      return;
+    }
+    if (pending) {
+      if (headRole === "Department Head")
+        memberships = [...new Set([...memberships, scopeValue])];
+      if (headRole === "Project Head")
+        assignedProjects = [...new Set([...assignedProjects, scopeValue])];
+      const plan = {
+        clubRole: primary,
+        extraRole: ["President", "Vice President"].includes(primary) ? extra : "",
+        headScope: headRole ? scopeValue : "",
+        departments: memberships,
+        projects: assignedProjects,
+      };
+      const name = String(f.get("name") || "").trim();
+      const email = String(f.get("email") || "").trim();
+      const isNew = !m.id;
+      let target = m;
+      if (isNew) {
+        target = {
+          id: uid(),
+          name,
+          email,
+          clubRole: "Member",
+          extraRole: "",
+          departments: [],
+          department: "",
+          projects: [],
+          headScope: "",
+          status: "Pending invitation",
+          plan,
+        };
+        db.members.push(target);
+      } else Object.assign(m, { name, email, plan });
+      closeModal();
+      if (!(await save())) return;
+      try {
+        await savePendingPlan(target);
+      } catch (error) {
+        alert(error instanceof Error ? error.message : "Could not save the plan.");
+        return;
+      }
+      if (isNew) {
+        try {
+          await sendInvitation(target.email);
+          alert(`Saved, and an invitation was sent to ${target.email}.`);
+        } catch (error) {
+          alert(
+            `Saved as pending. The invitation was not sent: ${error instanceof Error ? error.message : "Check the Supabase email settings."}`,
+          );
+        }
+      }
+      render();
       return;
     }
     // Changing someone's position replaces it: drop every department/project
@@ -3019,8 +3140,54 @@ function importMembersCsv(file) {
           errors.push(`Row ${line}: enter a name and valid email.`);
         if (seen.has(email))
           errors.push(`Row ${line}: duplicate email ${email}.`);
-        // Position, department and project columns are ignored: people are not placed
-        // anywhere until they have created their password.
+        if (!validRoles.includes(position))
+          errors.push(`Row ${line}: unknown position “${position}”.`);
+        if (
+          extra &&
+          !["Member", "Department Head", "Project Head"].includes(extra)
+        )
+          errors.push(`Row ${line}: unknown additional position “${extra}”.`);
+        if (
+          ds.some(
+            (x) =>
+              !db.departments.some(
+                (d) => d.name.toLowerCase() === x.toLowerCase(),
+              ),
+          )
+        )
+          errors.push(
+            `Row ${line}: department not found. Use exact department names.`,
+          );
+        if (
+          ps.some(
+            (x) =>
+              !db.projects.some(
+                (p) => p.name.toLowerCase() === x.toLowerCase(),
+              ),
+          )
+        )
+          errors.push(
+            `Row ${line}: project not found. Use exact project names.`,
+          );
+        let headRole = ["Department Head", "Project Head"].includes(position)
+          ? position
+          : extra;
+        if (headRole && !headScope)
+          errors.push(`Row ${line}: a head needs one head_scope.`);
+        if (
+          headRole === "Department Head" &&
+          !db.departments.some(
+            (d) => d.name.toLowerCase() === headScope.toLowerCase(),
+          )
+        )
+          errors.push(`Row ${line}: head_scope must be one department name.`);
+        if (
+          headRole === "Project Head" &&
+          !db.projects.some(
+            (p) => p.name.toLowerCase() === headScope.toLowerCase(),
+          )
+        )
+          errors.push(`Row ${line}: head_scope must be one project name.`);
         if (email) seen.add(email);
         made.push({
           name,
@@ -3032,6 +3199,14 @@ function importMembersCsv(file) {
           projects: [],
           headScope: "",
           status: "Pending invitation",
+          // Planned placement: applied only when they create their password.
+          plan: {
+            clubRole: position,
+            extraRole: extra,
+            headScope,
+            departments: ds,
+            projects: ps,
+          },
         });
       });
       if (errors.length) {
@@ -3044,27 +3219,31 @@ function importMembersCsv(file) {
       }
       made.forEach((m) => {
         m.id = uid();
-        let headRole = ["Department Head", "Project Head"].includes(m.clubRole)
-          ? m.clubRole
-          : m.extraRole;
+        const plan = m.plan;
+        const canon = (list: any[], name: string) =>
+          list.find((x) => x.name.toLowerCase() === String(name).toLowerCase())
+            ?.name || name;
+        plan.departments = plan.departments.map((n: string) =>
+          canon(db.departments, n),
+        );
+        plan.projects = plan.projects.map((n: string) => canon(db.projects, n));
+        const headRole = ["Department Head", "Project Head"].includes(
+          plan.clubRole,
+        )
+          ? plan.clubRole
+          : plan.extraRole;
         if (headRole === "Department Head") {
-          let d = db.departments.find(
-            (x) => x.name.toLowerCase() === m.headScope.toLowerCase(),
-          );
-          d.head = m.id;
-          m.departments = [...new Set([...m.departments, d.name])];
-          m.department = m.departments[0];
+          plan.headScope = canon(db.departments, plan.headScope);
+          plan.departments = [...new Set([...plan.departments, plan.headScope])];
         }
         if (headRole === "Project Head") {
-          let p = db.projects.find(
-            (x) => x.name.toLowerCase() === m.headScope.toLowerCase(),
-          );
-          p.lead = m.id;
-          m.projects = [...new Set([...m.projects, p.name])];
+          plan.headScope = canon(db.projects, plan.headScope);
+          plan.projects = [...new Set([...plan.projects, plan.headScope])];
         }
         db.members.push(m);
       });
       if (!(await save())) return;
+      for (const member of made) await savePendingPlan(member);
       let sent = 0,
         failed = 0;
       for (const member of made) {

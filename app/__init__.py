@@ -198,7 +198,7 @@ def create_app() -> Flask:
                 return jsonify(error="This profile is not waiting for an invitation."), 409
 
             invite_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
-            expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
             invite_status, _ = upstream(
                 "rest/v1/invitations",
                 "POST",
@@ -260,6 +260,14 @@ def create_app() -> Flask:
                 return jsonify(
                     error=f"Supabase could not send the invitation email{detail}. Check the Auth email (SMTP) settings in Supabase."
                 ), 502
+            # A fresh invitation restarts the 14-day window before unaccepted data is cleared.
+            upstream(
+                "rest/v1/pending_plans?" + urlencode({"member_id": f"eq.{targets[0]['id']}"}),
+                "PATCH",
+                secret,
+                secret,
+                {"expires_at": expires_at},
+            )
             return jsonify(ok=True, email=email), 202
         except RuntimeError as error:
             return jsonify(error=str(error)), 503
@@ -427,13 +435,14 @@ def create_app() -> Flask:
             )
             if status != 200 or not isinstance(invitations, list) or not invitations:
                 return jsonify(error="This invitation is missing or expired. Ask the system admin for a new one."), 403
-            query = urlencode({"id": f"eq.{member_id}", "status": "eq.Pending invitation"})
+            # One database transaction applies the planned position, departments and
+            # projects and marks the member Active.
             status, _ = upstream(
-                f"rest/v1/members?{query}",
-                "PATCH",
+                "rest/v1/rpc/activate_pending_member",
+                "POST",
                 secret,
                 secret,
-                {"status": "Active"},
+                {"p_member_id": member_id},
             )
             if status not in (200, 204):
                 return jsonify(error="Could not activate the invited member."), 502
