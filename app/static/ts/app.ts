@@ -1747,12 +1747,12 @@ function isAdmin() {
 function isOwner() {
   return Boolean(authProfile?.is_club_owner);
 }
+// President / Vice President, judged by the position rows the database also uses
+// (app_private.is_executive). Deliberately separate from isAdmin(): executives manage
+// tasks across the whole club but get no system administration.
 function isExecutive() {
-  return (
-    ["President", "Vice President"].includes(role) ||
-    currentPositions.some((position) =>
-      ["President", "Vice President"].includes(position),
-    )
+  return currentPositions.some((position) =>
+    ["President", "Vice President"].includes(position),
   );
 }
 function scope() {
@@ -2895,7 +2895,8 @@ function taskForm() {
   const globalManager = isAdmin() || isExecutive();
   const projects = globalManager ? db.projects : managedProjects();
   const departments = globalManager ? db.departments : managedDepartments();
-  if (!projects.length && !departments.length) return;
+  // Only admins and executives may create club-wide tasks (can_create_task in the database).
+  if (!globalManager && !projects.length && !departments.length) return;
   const scopeOptions = (items: any[], name: string) =>
     items
       .map(
@@ -2905,7 +2906,7 @@ function taskForm() {
       .join("");
   openModal(
     "Create a task",
-    `<form class="form" id="taskForm"><div class="field full"><label>Task name</label><input name="title" required placeholder="e.g. Cut the opening 20 seconds"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What should the finished work include?"></textarea></div>${projects.length ? `<div class="field full"><label>Projects</label><div class="form-checks">${scopeOptions(projects, "projects")}</div></div>` : ""}${departments.length ? `<div class="field full"><label>Departments</label><div class="form-checks">${scopeOptions(departments, "departments")}</div>` : ""}<small class="quiet field full">Choose one or more projects and/or departments. New tasks start as Unassigned.</small>${departments.length ? "</div>" : ""}<div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Create unassigned task</button></div></form>`,
+    `<form class="form" id="taskForm"><div class="field full"><label>Task name</label><input name="title" required placeholder="e.g. Cut the opening 20 seconds"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What should the finished work include?"></textarea></div>${projects.length ? `<div class="field full"><label>Projects</label><div class="form-checks">${scopeOptions(projects, "projects")}</div></div>` : ""}${departments.length ? `<div class="field full"><label>Departments</label><div class="form-checks">${scopeOptions(departments, "departments")}</div>` : ""}${globalManager ? '<div class="field full"><label class="check"><input type="checkbox" name="clubwide" id="clubWideTask">Club-wide task (the whole club, no project or department)</label></div>' : ""}<small class="quiet field full">Choose one or more projects and/or departments${globalManager ? ", or tick club-wide" : ""}. New tasks start as Unassigned.</small>${departments.length ? "</div>" : ""}<div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Create unassigned task</button></div></form>`,
   );
   $("taskForm").onsubmit = (e) => {
     e.preventDefault();
@@ -2920,8 +2921,15 @@ function taskForm() {
         '[name="departments"]:checked',
       ),
     ].map((input) => input.value);
-    if (!selectedProjects.length && !selectedDepartments.length) {
-      alert("Choose at least one project or department for this task.");
+    const clubWide = globalManager && form.get("clubwide") === "on";
+    if (clubWide && (selectedProjects.length || selectedDepartments.length)) {
+      alert(
+        "A club-wide task cannot also belong to a project or department. Untick club-wide, or clear the projects and departments.",
+      );
+      return;
+    }
+    if (!clubWide && !selectedProjects.length && !selectedDepartments.length) {
+      alert("Choose at least one project or department, or tick club-wide.");
       return;
     }
     db.tasks.unshift({
@@ -2949,10 +2957,12 @@ function assignTask(id) {
   if (!task || !canManageTask(task)) return;
   const taskProjectNames = taskProjects(task);
   const taskDepartmentNames = taskDepartments(task);
+  const clubWide = !taskProjectNames.length && !taskDepartmentNames.length;
   const eligibleMembers = db.members.filter(
     (member) =>
       member.status === "Active" &&
-      (member.projects.some((project) => taskProjectNames.includes(project)) ||
+      (clubWide ||
+        member.projects.some((project) => taskProjectNames.includes(project)) ||
         deptsOf(member).some((department) =>
           taskDepartmentNames.includes(department),
         )),
@@ -3047,8 +3057,10 @@ async function resendMemberInvitation(id: string) {
     );
   }
 }
+// Heads are positions (member_positions), and departments/projects are admin-only tables,
+// so the database accepts this only from a system admin. Executives are not offered it.
 function editLead(type, n) {
-  if (!isAdmin() && !isExecutive()) return;
+  if (!isAdmin()) return;
   let record =
     type === "department"
       ? db.departments.find((x) => x.name === n)
@@ -3071,6 +3083,9 @@ function editLead(type, n) {
     save();
   };
 }
+// Department/project membership: system admin, or the head of that department/project.
+// Presidents and Vice Presidents do not get it just for being executives (the database
+// policies member_departments_scoped_* and assignments_scoped_* agree).
 function assignProjects(id) {
   let m = person(id);
   if (!m || !canManageMember(m)) return;
@@ -3488,6 +3503,7 @@ $("adminAddMember").onclick = () => {
   if (isAdmin()) memberForm();
 };
 $("addDept").onclick = () => {
+  if (!isAdmin()) return; // creating departments is admin-only (departments_admin_write)
   let n = $("deptName").value.trim();
   if (
     n &&
@@ -3504,6 +3520,7 @@ $("addDept").onclick = () => {
   }
 };
 $("addProject").onclick = () => {
+  if (!isAdmin()) return; // creating projects is admin-only (projects_admin_write)
   let n = $("projectName").value.trim();
   if (n && !db.projects.some((p) => p.name.toLowerCase() === n.toLowerCase())) {
     db.projects.push({

@@ -22394,7 +22394,7 @@ ${suffix}`;
     return Boolean(authProfile?.is_club_owner);
   }
   function isExecutive() {
-    return ["President", "Vice President"].includes(role) || currentPositions.some(
+    return currentPositions.some(
       (position) => ["President", "Vice President"].includes(position)
     );
   }
@@ -23250,13 +23250,13 @@ END:VCALENDAR\r
     const globalManager = isAdmin() || isExecutive();
     const projects = globalManager ? db.projects : managedProjects();
     const departments = globalManager ? db.departments : managedDepartments();
-    if (!projects.length && !departments.length) return;
+    if (!globalManager && !projects.length && !departments.length) return;
     const scopeOptions = (items, name) => items.map(
       (item) => `<label class="check"><input type="checkbox" name="${name}" value="${esc(item.name)}">${esc(item.name)}</label>`
     ).join("");
     openModal(
       "Create a task",
-      `<form class="form" id="taskForm"><div class="field full"><label>Task name</label><input name="title" required placeholder="e.g. Cut the opening 20 seconds"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What should the finished work include?"></textarea></div>${projects.length ? `<div class="field full"><label>Projects</label><div class="form-checks">${scopeOptions(projects, "projects")}</div></div>` : ""}${departments.length ? `<div class="field full"><label>Departments</label><div class="form-checks">${scopeOptions(departments, "departments")}</div>` : ""}<small class="quiet field full">Choose one or more projects and/or departments. New tasks start as Unassigned.</small>${departments.length ? "</div>" : ""}<div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Create unassigned task</button></div></form>`
+      `<form class="form" id="taskForm"><div class="field full"><label>Task name</label><input name="title" required placeholder="e.g. Cut the opening 20 seconds"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What should the finished work include?"></textarea></div>${projects.length ? `<div class="field full"><label>Projects</label><div class="form-checks">${scopeOptions(projects, "projects")}</div></div>` : ""}${departments.length ? `<div class="field full"><label>Departments</label><div class="form-checks">${scopeOptions(departments, "departments")}</div>` : ""}${globalManager ? '<div class="field full"><label class="check"><input type="checkbox" name="clubwide" id="clubWideTask">Club-wide task (the whole club, no project or department)</label></div>' : ""}<small class="quiet field full">Choose one or more projects and/or departments${globalManager ? ", or tick club-wide" : ""}. New tasks start as Unassigned.</small>${departments.length ? "</div>" : ""}<div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(["Medium", "High", "Urgent", "Low"], "Medium")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Create unassigned task</button></div></form>`
     );
     $("taskForm").onsubmit = (e) => {
       e.preventDefault();
@@ -23271,8 +23271,15 @@ END:VCALENDAR\r
           '[name="departments"]:checked'
         )
       ].map((input) => input.value);
-      if (!selectedProjects.length && !selectedDepartments.length) {
-        alert("Choose at least one project or department for this task.");
+      const clubWide = globalManager && form.get("clubwide") === "on";
+      if (clubWide && (selectedProjects.length || selectedDepartments.length)) {
+        alert(
+          "A club-wide task cannot also belong to a project or department. Untick club-wide, or clear the projects and departments."
+        );
+        return;
+      }
+      if (!clubWide && !selectedProjects.length && !selectedDepartments.length) {
+        alert("Choose at least one project or department, or tick club-wide.");
         return;
       }
       db.tasks.unshift({
@@ -23300,8 +23307,9 @@ END:VCALENDAR\r
     if (!task || !canManageTask(task)) return;
     const taskProjectNames = taskProjects(task);
     const taskDepartmentNames = taskDepartments(task);
+    const clubWide = !taskProjectNames.length && !taskDepartmentNames.length;
     const eligibleMembers = db.members.filter(
-      (member) => member.status === "Active" && (member.projects.some((project) => taskProjectNames.includes(project)) || deptsOf(member).some(
+      (member) => member.status === "Active" && (clubWide || member.projects.some((project) => taskProjectNames.includes(project)) || deptsOf(member).some(
         (department) => taskDepartmentNames.includes(department)
       ))
     );
@@ -23387,7 +23395,7 @@ END:VCALENDAR\r
     }
   }
   function editLead(type, n) {
-    if (!isAdmin() && !isExecutive()) return;
+    if (!isAdmin()) return;
     let record = type === "department" ? db.departments.find((x) => x.name === n) : db.projects.find((x) => x.name === n);
     if (!record) return;
     openModal(
@@ -23737,6 +23745,7 @@ END:VCALENDAR\r
     if (isAdmin()) memberForm();
   };
   $("addDept").onclick = () => {
+    if (!isAdmin()) return;
     let n = $("deptName").value.trim();
     if (n && !db.departments.some((d) => d.name.toLowerCase() === n.toLowerCase())) {
       db.departments.push({
@@ -23750,6 +23759,7 @@ END:VCALENDAR\r
     }
   };
   $("addProject").onclick = () => {
+    if (!isAdmin()) return;
     let n = $("projectName").value.trim();
     if (n && !db.projects.some((p) => p.name.toLowerCase() === n.toLowerCase())) {
       db.projects.push({
