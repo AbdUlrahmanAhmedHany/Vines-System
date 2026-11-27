@@ -9,11 +9,13 @@
     "dev:worker": "uv run pywrangler dev",
     "deploy:worker": "uv run pywrangler deploy",
     "preview:worker": "uv run pywrangler preview",
-    "format": "prettier --write app/templates/index.html app/static/css/styles.css app/static/ts/app.ts shared-app/README.md README.md package.json tsconfig.json wrangler.jsonc"
+    "format": "prettier --write app/templates/index.html app/static/css/styles.css app/static/ts/app.ts shared-app/README.md README.md package.json tsconfig.json wrangler.jsonc",
+    "test:unit": "vitest run"
   },
   "devDependencies": {
     "prettier": "^3.10.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.2"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.119.2",

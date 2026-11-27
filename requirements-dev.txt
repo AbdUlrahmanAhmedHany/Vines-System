@@ -1,0 +1,4 @@
+Flask>=3.1,<4.0
+pytest>=8
+playwright>=1.50
+psycopg[binary]>=3.2

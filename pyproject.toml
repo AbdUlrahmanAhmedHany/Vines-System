@@ -10,3 +10,9 @@ package = false
 
 [dependency-groups]
 dev = ["workers-py", "workers-runtime-sdk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = ["e2e: browser tests driven by Playwright"]

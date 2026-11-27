@@ -91,3 +91,16 @@ The current database setup instructions are in [shared-app/README.md](shared-app
 ## Hosting
 
 Cloudflare Workers can run the Flask app through Python Workers. The Worker configuration is in `wrangler.jsonc`. Do not invite members or store real club data until Supabase Auth, database access, and server-enforced permissions are implemented and verified.
+
+## Automated tests
+
+Every push to `main` and every pull request runs four jobs in GitHub Actions (`.github/workflows/ci.yml`):
+
+| Job | What it covers | Run locally |
+| --- | --- | --- |
+| Frontend | TypeScript type-check and bundle (the committed `app/static/js/app.js` must match), Vitest unit tests in `tests/frontend` | `npm run build && npm run test:unit` |
+| Backend | The Flask routes against a fake Supabase server (`tests/backend`) | `python -m pytest tests/backend` |
+| Database | Row-level-security tests in `tests/db`. They build a throwaway PostgreSQL database from the real SQL files in `shared-app/` (run order in `tests/db/conftest.py`) and act as each role | `TEST_DATABASE_URL=postgresql://user@host/postgres python -m pytest tests/db` |
+| Browser | Playwright drives the real app in Chromium with an in-page Supabase stand-in (`tests/e2e`) | `pip install -r requirements-dev.txt && python -m playwright install chromium && python -m pytest tests/e2e` |
+
+Every new SQL migration must be added to the `MIGRATIONS` list in `tests/db/conftest.py` so the database tests run against it. Work happens on a branch, and the branch is merged only when all four jobs are green.
