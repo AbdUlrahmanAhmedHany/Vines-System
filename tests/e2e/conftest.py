@@ -38,16 +38,19 @@ def open_app(browser, base_url):
     """open_app(email="admin@vines.test", uid="m0", positions=("President",), width=1440) -> page"""
     contexts = []
 
-    def _open(email="admin@vines.test", uid="m0", positions=(), width=1440, height=900, route="/"):
+    def _open(email="admin@vines.test", uid="m0", positions=(), width=1440, height=900, route="/", seed="", position_scopes=None):
         shim = SHIM.replace("email: ADMIN,", f'email: "{email}",', 1).replace('id: "m0", aud', f'id: "{uid}", aud', 1)
+        scopes = position_scopes or {}
         rows = ",".join(
-            '{id:"mp%d",member_id:"%s",position_id:"%s",department_id:null,project_id:null,assigned_by:null}' % (i, uid, pos)
+            '{id:"mp%d",member_id:"%s",position_id:"%s",department_id:%s,project_id:%s,assigned_by:null}'
+            % (i, uid, pos, scopes.get(pos, {}).get("department", "null"), scopes.get(pos, {}).get("project", "null"))
             for i, pos in enumerate(positions)
         )
         if rows:
             shim = shim.replace("member_positions: [],", f"member_positions: [{rows}],", 1)
         context = browser.new_context(viewport={"width": width, "height": height})
         contexts.append(context)
+        context.add_init_script("window.__SEED=function(DATA){%s}" % seed)
         context.add_init_script(shim)
         page = context.new_page()
         page.errors = []
@@ -65,3 +68,19 @@ def open_app(browser, base_url):
 
 PRESIDENT = "pos1"
 VICE_PRESIDENT = "pos2"
+DEPARTMENT_HEAD = "pos3"
+PROJECT_HEAD = "pos4"
+
+
+def until(page, expression, timeout=5000):
+    """Wait for a JavaScript expression to become true.
+
+    page.wait_for_function() compiles its predicate inside the page, which the app's
+    Content-Security-Policy forbids once it has to poll, so this polls with evaluate() instead."""
+    waited = 0
+    while waited <= timeout:
+        if page.evaluate(expression):
+            return
+        page.wait_for_timeout(50)
+        waited += 50
+    raise AssertionError(f"timed out waiting for: {expression}")

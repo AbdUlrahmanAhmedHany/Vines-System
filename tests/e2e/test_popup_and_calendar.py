@@ -1,3 +1,6 @@
+from conftest import until
+
+
 def test_alerts_become_a_centred_popup(open_app):
     page = open_app()
     page.evaluate("alert('Profile saved.'); alert('Could not send the invitation: limit reached.')")
@@ -6,10 +9,10 @@ def test_alerts_become_a_centred_popup(open_app):
     assert abs(box[0] - 720) < 30 and abs(box[1] - 450) < 60
     assert page.inner_text("#popupText") == "Profile saved."
     page.click("#popupOk")
-    page.wait_for_function("document.querySelector('#popupText').innerText.includes('Could not send')")
+    until(page, "document.querySelector('#popupText').innerText.includes('Could not send')")
     assert page.eval_on_selector("#popup", "e=>e.classList.contains('error')")
     page.keyboard.press("Escape")
-    page.wait_for_function("!document.querySelector('#popup').classList.contains('open')")
+    until(page, "!document.querySelector('#popup').classList.contains('open')")
     assert page.native_dialogs == []
 
 

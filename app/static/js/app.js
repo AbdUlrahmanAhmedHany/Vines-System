@@ -32,6 +32,54 @@
     return rows;
   }
 
+  // app/static/ts/task-rules.ts
+  var PRIORITIES = ["Low", "Medium", "High", "Urgent"];
+  var WORKING_STATUSES = ["Not Started", "In Progress", "Under Review", "Blocked"];
+  var leadership = (c) => c.isAdmin || c.isExecutive;
+  var isSubtask = (t) => Boolean(t.parent);
+  var parentOf = (c, t) => t.parent ? c.tasks.find((x) => x.id === t.parent) : void 0;
+  function responsible(c, t) {
+    return (isSubtask(t) ? parentOf(c, t)?.assignee : t.assignee) || "";
+  }
+  function canDivide(c, t) {
+    if (isSubtask(t) || t.status === "Completed") return false;
+    if (leadership(c)) return true;
+    return c.isHead && (t.creator === c.me || t.divisionOwner === c.me);
+  }
+  function canEditDetails(c, t) {
+    if (leadership(c)) return true;
+    return t.creator === c.me || isSubtask(t) && responsible(c, t) === c.me;
+  }
+  function canComplete(c, t) {
+    if (leadership(c)) return true;
+    if (!isSubtask(t) && t.assignee === c.me) return true;
+    if (isSubtask(t) && (t.creator === c.me || responsible(c, t) === c.me)) return true;
+    return (t.projects || []).some((p) => c.ledProjects.includes(p));
+  }
+  function canManage(c, t) {
+    if (leadership(c)) return true;
+    if (isSubtask(t)) return t.creator === c.me || responsible(c, t) === c.me;
+    if ((t.projects || []).length) return t.projects.some((p) => c.ledProjects.includes(p));
+    return (t.departments || []).some((d) => c.managedDepartments.includes(d));
+  }
+  function canRequestChange(c, t) {
+    if (!isSubtask(t) || t.status === "Completed" || !t.assignee || canEditDetails(c, t)) return false;
+    return c.departmentsOf(t.assignee).some((d) => c.managedDepartments.includes(d));
+  }
+  function canReview(c, t) {
+    return leadership(c) || responsible(c, t) === c.me;
+  }
+  function progressOf(total, completed) {
+    const pct = total ? Math.round(completed / total * 100) : 0;
+    return { total, completed, pct, label: total ? `${completed} of ${total} done (${pct}%)` : "No subtasks" };
+  }
+  function unmetDependencies(deps, tasks, taskId) {
+    return deps.filter((d) => d.task === taskId).map((d) => tasks.find((t) => t.id === d.dependsOn)).filter((t) => Boolean(t) && t.status !== "Completed");
+  }
+  function statusClass(status) {
+    return { Completed: "done", Unassigned: "unassigned", "Not Started": "pending", "Under Review": "review", "In Progress": "progress", Blocked: "blocked" }[status] || "todo";
+  }
+
   // node_modules/@supabase/supabase-js/dist/tracingRegistry.mjs
   var EXTRACTOR_KEY = /* @__PURE__ */ Symbol.for("@supabase/supabase-js.traceContextExtractor");
   function getTraceContextExtractor() {
@@ -21792,7 +21840,7 @@ ${suffix}`;
       supabase.from("member_departments").select("member_id,department_id"),
       supabase.from("project_assignments").select("member_id,project_id,status,role_on_project"),
       supabase.from("tasks").select(
-        "id,title,description,task_type,project_id,department_id,assignee_id,assigned_by,status,priority,due_at,progress_update"
+        "id,title,description,task_type,project_id,department_id,assignee_id,assigned_by,status,priority,due_at,progress_update,parent_task_id,created_by,division_owner_id,updated_at"
       ),
       supabase.from("task_projects").select("task_id,project_id"),
       supabase.from("task_departments").select("task_id,department_id"),
@@ -21800,7 +21848,12 @@ ${suffix}`;
       supabase.from("member_positions").select("member_id,position_id,department_id,project_id"),
       supabase.from("positions").select("id,name"),
       supabase.from("member_contacts").select("member_id,phone"),
-      supabase.from("pending_plans").select("member_id,plan,expires_at")
+      supabase.from("pending_plans").select("member_id,plan,expires_at"),
+      supabase.from("task_requests").select(
+        "id,task_id,request_type,requested_by,changes,reason,status,created_at,reviewed_by,reviewed_at,review_note"
+      ),
+      supabase.from("task_dependencies").select("task_id,depends_on_task_id"),
+      supabase.from("notifications").select("id,kind,title,body,task_id,created_at,read_at").order("created_at", { ascending: false }).limit(50)
     ]);
     const failed = results.find((result) => result.error);
     if (failed?.error)
@@ -21818,7 +21871,10 @@ ${suffix}`;
       memberPositions,
       positions,
       contacts,
-      pendingPlans
+      pendingPlans,
+      requestRows,
+      dependencyRows,
+      notificationRows
     ] = results.map((result) => result.data || []);
     const planByMember = new Map(
       pendingPlans.map((item) => [item.member_id, item])
@@ -21912,6 +21968,14 @@ ${suffix}`;
         );
       }
     });
+    const progress = {};
+    const mainIds = tasks.filter((item) => !item.parent_task_id).map((item) => item.id);
+    if (mainIds.length) {
+      const counted = await supabase.rpc("get_task_progress", { p_task_ids: mainIds });
+      (counted.data || []).forEach((row) => {
+        progress[row.task_id] = { total: row.total, completed: row.completed, blocked: row.blocked };
+      });
+    }
     const updatesByTask = /* @__PURE__ */ new Map();
     updates.forEach((item) => {
       const list = updatesByTask.get(item.task_id) || [];
@@ -21981,8 +22045,31 @@ ${suffix}`;
         priority: item.priority,
         due: item.due_at ? String(item.due_at).slice(0, 10) : "",
         update: item.progress_update || "",
-        updates: updatesByTask.get(item.id) || []
-      }))
+        updates: updatesByTask.get(item.id) || [],
+        parent: item.parent_task_id || "",
+        creator: item.created_by || "",
+        divisionOwner: item.division_owner_id || "",
+        updatedAt: item.updated_at || ""
+      })),
+      requests: requestRows.map((item) => ({
+        id: item.id,
+        task: item.task_id,
+        type: item.request_type,
+        by: item.requested_by,
+        changes: item.changes || {},
+        reason: item.reason || "",
+        status: item.status,
+        at: item.created_at,
+        reviewedBy: item.reviewed_by || "",
+        reviewedAt: item.reviewed_at || "",
+        note: item.review_note || ""
+      })),
+      dependencies: dependencyRows.map((item) => ({
+        task: item.task_id,
+        dependsOn: item.depends_on_task_id
+      })),
+      notifications: notificationRows,
+      progress
     };
   }
   $("loginForm").addEventListener("submit", async (event) => {
@@ -22260,7 +22347,7 @@ ${suffix}`;
           department_id: byName(after.departments, departments[0] || ""),
           assignee_id: task.assignee || null,
           assigned_by: task.assigner || authProfile.id,
-          status: task.status || (task.assignee ? "Pending" : "Unassigned"),
+          status: task.status || (task.assignee ? "Not Started" : "Unassigned"),
           priority: task.priority || "Medium",
           due_at: task.due ? `${task.due}T23:59:00` : null,
           progress_update: task.update || ""
@@ -22434,11 +22521,8 @@ ${suffix}`;
   function initials(s = "?") {
     return s.trim().split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   }
-  function statusClass(s) {
-    return s === "Done" ? "done" : s === "Unassigned" ? "unassigned" : s === "Pending" ? "pending" : s === "In review" ? "review" : s === "In progress" ? "progress" : "todo";
-  }
   function badge(s) {
-    return `<span class="badge ${statusClass(s)}">${esc(s || "To do")}</span>`;
+    return `<span class="badge ${statusClass(s)}">${esc(s || "Not Started")}</span>`;
   }
   function options(list, selected = "") {
     return list.map(
@@ -22484,32 +22568,34 @@ ${suffix}`;
   function taskScopeLabel(task) {
     return [...taskProjects(task), ...taskDepartments(task)].join(" \xB7 ") || "Club-wide";
   }
+  function ruleCtx() {
+    return {
+      me: authProfile?.id || "",
+      isAdmin: isAdmin(),
+      isExecutive: isExecutive(),
+      isHead: currentPositions.some(
+        (position) => ["Project Head", "Department Head"].includes(position)
+      ),
+      ledProjects: managedProjects().map((project) => project.name),
+      managedDepartments: managedDepartments().map((department) => department.name),
+      tasks: db.tasks,
+      departmentsOf: (id) => {
+        const member = person(id);
+        return member ? deptsOf(member) : [];
+      }
+    };
+  }
   function canManageTask(task) {
-    if (isAdmin() || isExecutive()) return true;
-    const projectNames = taskProjects(task);
-    if (projectNames.length)
-      return projectNames.some(
-        (name) => db.projects.some(
-          (project) => project.name === name && project.lead === authProfile?.id
-        )
-      );
-    return taskDepartments(task).some(
-      (name) => db.departments.some(
-        (department) => department.name === name && department.head === authProfile?.id
-      )
-    );
+    return canManage(ruleCtx(), task);
   }
   function canMarkTaskDone(task) {
-    return Boolean(
-      isAdmin() || isExecutive() || taskProjects(task).some(
-        (name) => db.projects.some(
-          (project) => project.name === name && project.lead === authProfile?.id
-        )
-      )
-    );
+    return canComplete(ruleCtx(), task);
   }
   function canDeleteTask() {
     return isAdmin() || isExecutive();
+  }
+  function canDeleteTaskItem(task) {
+    return canDeleteTask() || Boolean(task.parent) && (task.creator === authProfile?.id || responsible(ruleCtx(), task) === authProfile?.id);
   }
   function canCreateTask() {
     return isAdmin() || isExecutive() || managedProjects().length > 0 || managedDepartments().length > 0;
@@ -22576,6 +22662,7 @@ ${suffix}`;
     );
     $("adminNav").classList.toggle("hidden", !isAdmin());
     renderHome();
+    renderNotifications();
     renderMembers();
     renderTasks();
     renderCalendar();
@@ -22685,9 +22772,9 @@ ${suffix}`;
     } else if (mode === "member") {
       ts = db.tasks.filter((t) => t.assignee === authProfile?.id);
     }
-    const open = ts.filter((t) => t.status !== "Done");
+    const open = ts.filter((t) => t.status !== "Completed");
     const soon = open.filter((t) => t.due && t.due <= weekAhead);
-    const done = ts.filter((t) => t.status === "Done").length;
+    const done = ts.filter((t) => t.status === "Completed").length;
     const donePct = ts.length ? Math.round(done / ts.length * 100) : 0;
     const scopeNote = mode === "head" ? [
       ...managedDepartments().map((d) => d.name),
@@ -22704,14 +22791,14 @@ ${suffix}`;
     cards.push(
       ["Open tasks", open.length, "\u2726", "still moving"],
       ["Due this week", soon.length, "\u25F7", "next 7 days"],
-      ["Done", done, "\u2713", `${donePct}% complete`]
+      ["Completed", done, "\u2713", `${donePct}% complete`]
     );
     $("stats").classList.toggle("three", cards.length === 3);
     $("stats").innerHTML = cards.map(
       ([label, value, icon, foot]) => `<div class="stat"><div class="stat-label"><span class="stat-ico">${icon}</span>${label}</div><strong>${value}</strong><div class="stat-foot">${esc(foot)}</div></div>`
     ).join("");
     $("homeTasksTitle").textContent = mode === "member" ? "Your tasks" : mode === "head" ? "Coming up in your team" : "Coming up";
-    const upcoming = [...ts].filter((t) => t.status !== "Done").sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999")).slice(0, 5);
+    const upcoming = [...ts].filter((t) => t.status !== "Completed").sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999")).slice(0, 5);
     $("homeTasks").innerHTML = upcoming.length ? upcoming.map(
       (t) => `<div class="row"><div class="task-mini"><span class="task-marker ${t.due && t.due < today ? "late" : ""}"></span><div><div class="row-title">${esc(t.title)}</div><div class="row-sub">${esc(mode === "member" ? taskScopeLabel(t) : personName(t.assignee) + " \xB7 " + taskScopeLabel(t))}</div></div></div><div>${badge(t.status)}<div class="row-sub align-right">${t.due ? (/* @__PURE__ */ new Date(t.due + "T00:00:00")).toLocaleDateString(void 0, { month: "short", day: "numeric" }) : "No due date"}</div></div></div>`
     ).join("") : mode === "member" ? '<div class="empty"><strong>Nothing assigned to you yet.</strong>Tasks your department or project head gives you will show up here.</div>' : '<div class="empty"><strong>Your next story starts here.</strong>Assign the first task to bring it to life.</div>';
@@ -22728,28 +22815,6 @@ ${suffix}`;
         " "
       )}</div><div>${SHARED_WRITES_ENABLED && isAdmin() ? `<button class="btn ghost small" data-action="edit-member" data-id="${m.id}">Edit profile</button>${isOwner() && !m.isClubOwner ? `<button class="btn ghost small" data-action="toggle-system-access" data-id="${m.id}">${m.isClubAdmin ? "Revoke system access" : "Grant system access"}</button>` : ""}${m.status === "Pending invitation" ? `<button class="btn ghost small" data-action="resend-invitation" data-id="${m.id}">Send invitation</button>` : ""}${canRemoveMember(m) ? `<button class="btn danger small" data-action="remove-member" data-id="${m.id}">Remove</button>` : ""}` : SHARED_WRITES_ENABLED && canManageMember(m) ? `<button class="btn ghost small" data-action="assign-projects" data-id="${m.id}">Change assignments</button>` : ""}</div></div>`
     ).join("") : '<div class="empty"><strong>No members in this view yet.</strong>Add your team one department at a time.</div>');
-  }
-  function renderTasks() {
-    let q = $("taskSearch").value.toLowerCase(), sf = $("taskStatusFilter").value, pf = $("taskProjectFilter").value, df = $("taskDepartmentFilter").value;
-    let list = allowedTasks().filter(
-      (t) => (!q || t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)) && (!sf || t.status === sf) && (!pf || taskProjects(t).includes(pf)) && (!df || taskDepartments(t).includes(df))
-    ).sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999"));
-    $("taskList").innerHTML = `<div class="task header"><span>Task</span><span>Assignee</span><span>Projects / departments</span><span>Priority</span><span>Deadline</span><span>Status</span><span></span></div>` + (list.length ? list.map((t) => {
-      const canManage = canManageTask(t);
-      const canMarkDone = canMarkTaskDone(t);
-      const canUpdateProgress = Boolean(
-        canManage || t.assignee === authProfile?.id
-      );
-      const statusChoices = [
-        "Pending",
-        "In progress",
-        "In review",
-        ...canMarkDone ? ["Done"] : []
-      ];
-      const taskTitle = canManage ? `<button type="button" class="task-title-button" data-action="assign-task" data-id="${t.id}">${esc(t.title)}</button>` : esc(t.title);
-      const canEditStatus = canUpdateProgress && t.assignee && (canMarkDone || t.status !== "Done");
-      return `<div class="task"><div><div class="row-title">${taskTitle}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` \xB7 assigned by ${esc(personName(t.assigner))}` : ""}</div>${t.update ? `<div class="progress-update">\u21B3 ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(taskScopeLabel(t))}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? (/* @__PURE__ */ new Date(t.due + "T00:00:00")).toLocaleDateString(void 0, { month: "short", day: "numeric", year: "numeric" }) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManage ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">\uFF0B Update</button>${canDeleteTask() ? `<button class="btn danger small" data-action="delete-task" data-id="${t.id}">Delete</button>` : ""}` : ""}</div></div>`;
-    }).join("") : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
   }
   function weekStart(d) {
     let first = 1;
@@ -22772,7 +22837,7 @@ ${suffix}`;
     });
     return map;
   }
-  var isOverdue = (task) => task.due && task.status !== "Done" && task.due < ymd(/* @__PURE__ */ new Date());
+  var isOverdue = (task) => task.due && task.status !== "Completed" && task.due < ymd(/* @__PURE__ */ new Date());
   function calChip(task) {
     return `<button type="button" class="cal-chip ${statusClass(task.status)}${isOverdue(task) ? " overdue" : ""}" data-cal-task="${task.id}" title="${esc(task.title)}"><span>${esc(task.title)}</span></button>`;
   }
@@ -22840,8 +22905,8 @@ ${suffix}`;
   function showCalendarTask(id) {
     const task = db.tasks.find((t) => t.id === id);
     if (!task) return;
-    const canManage = canManageTask(task);
-    const canUpdate = Boolean(canManage || task.assignee === authProfile?.id);
+    const canManage2 = canManageTask(task);
+    const canUpdate = Boolean(canManage2 || task.assignee === authProfile?.id);
     const dueText = (/* @__PURE__ */ new Date(`${task.due}T00:00:00`)).toLocaleDateString(void 0, {
       weekday: "long",
       day: "numeric",
@@ -22850,7 +22915,7 @@ ${suffix}`;
     });
     openModal(
       task.title,
-      `<div class="cal-detail"><div class="cal-detail-badges">${badge(task.status)}<span class="badge ${task.priority === "Urgent" ? "urgent" : task.priority === "High" ? "high" : ""}">${esc(task.priority)}</span>${isOverdue(task) ? '<span class="badge urgent">Overdue</span>' : ""}</div><div class="cal-detail-when">\u25F7 Due ${esc(dueText)}</div><h4>Description</h4><p class="cal-detail-desc">${task.description ? esc(task.description) : '<span class="quiet">No description was added.</span>'}</p><dl class="cal-detail-meta"><div><dt>Assigned to</dt><dd>${task.assignee ? esc(personName(task.assignee)) : "Unassigned"}</dd></div><div><dt>Assigned by</dt><dd>${task.assigner ? esc(personName(task.assigner)) : "\u2014"}</dd></div><div><dt>Project / department</dt><dd>${esc(taskScopeLabel(task))}</dd></div></dl>${task.update ? `<h4>Latest update</h4><p class="cal-detail-desc">${esc(task.update)}</p>` : ""}<div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Close</button>${SHARED_WRITES_ENABLED && canManage ? `<button type="button" class="btn ghost" data-action="assign-task" data-id="${task.id}">${task.assignee ? "Reassign" : "Assign"}</button>` : ""}${SHARED_WRITES_ENABLED && canUpdate ? `<button type="button" class="btn lime" data-action="add-update" data-id="${task.id}">\uFF0B Update</button>` : ""}</div></div>`
+      `<div class="cal-detail"><div class="cal-detail-badges">${badge(task.status)}<span class="badge ${task.priority === "Urgent" ? "urgent" : task.priority === "High" ? "high" : ""}">${esc(task.priority)}</span>${isOverdue(task) ? '<span class="badge urgent">Overdue</span>' : ""}</div><div class="cal-detail-when">\u25F7 Due ${esc(dueText)}</div><h4>Description</h4><p class="cal-detail-desc">${task.description ? esc(task.description) : '<span class="quiet">No description was added.</span>'}</p><dl class="cal-detail-meta"><div><dt>Assigned to</dt><dd>${task.assignee ? esc(personName(task.assignee)) : "Unassigned"}</dd></div><div><dt>Assigned by</dt><dd>${task.assigner ? esc(personName(task.assigner)) : "\u2014"}</dd></div><div><dt>Project / department</dt><dd>${esc(taskScopeLabel(task))}</dd></div></dl>${task.update ? `<h4>Latest update</h4><p class="cal-detail-desc">${esc(task.update)}</p>` : ""}<div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Close</button>${SHARED_WRITES_ENABLED && canManage2 ? `<button type="button" class="btn ghost" data-action="assign-task" data-id="${task.id}">${task.assignee ? "Reassign" : "Assign"}</button>` : ""}${SHARED_WRITES_ENABLED && canUpdate ? `<button type="button" class="btn lime" data-action="add-update" data-id="${task.id}">\uFF0B Update</button>` : ""}</div></div>`
     );
   }
   function shiftCalendar(direction) {
@@ -23334,7 +23399,7 @@ END:VCALENDAR\r
     const taskDepartmentNames = taskDepartments(task);
     const clubWide = !taskProjectNames.length && !taskDepartmentNames.length;
     const eligibleMembers = db.members.filter(
-      (member) => member.status === "Active" && (clubWide || member.projects.some((project) => taskProjectNames.includes(project)) || deptsOf(member).some(
+      (member) => member.status === "Active" && (!task.parent || coversTaskMember(task, member)) && (clubWide || member.projects.some((project) => taskProjectNames.includes(project)) || deptsOf(member).some(
         (department) => taskDepartmentNames.includes(department)
       ))
     );
@@ -23354,7 +23419,7 @@ END:VCALENDAR\r
       if (!eligibleMembers.some((member) => member.id === assignee)) return;
       task.assignee = assignee;
       task.assigner = authProfile.id;
-      task.status = "Pending";
+      task.status = "Not Started";
       closeModal();
       save();
     };
@@ -23382,25 +23447,16 @@ END:VCALENDAR\r
   }
   function deleteTask(id) {
     const t = db.tasks.find((task) => task.id === id);
-    if (!t || !canDeleteTask()) return;
+    if (!t || !canDeleteTaskItem(t)) return;
     openModal(
-      "Delete task",
-      `<p>Delete <strong>${esc(t.title)}</strong>? Its progress updates are deleted with it. This cannot be undone.</p><div class="form-actions" style="margin-top:16px"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button type="button" class="btn danger" id="confirmDeleteTask">Delete task</button></div>`
+      t.parent ? "Delete subtask" : "Delete task",
+      `<p>Delete <strong>${esc(t.title)}</strong>? ${t.parent ? "" : "Its subtasks are deleted with it. "}Its progress updates and comments are deleted too. This cannot be undone.</p><div class="form-actions" style="margin-top:16px"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button type="button" class="btn danger" id="confirmDeleteTask">Delete task</button></div>`
     );
     $("confirmDeleteTask").onclick = () => {
-      db.tasks = db.tasks.filter((task) => task.id !== id);
+      db.tasks = db.tasks.filter((task) => task.id !== id && task.parent !== id);
       closeModal();
       save();
     };
-  }
-  function updateTask(id, key, value) {
-    let t = db.tasks.find((t2) => t2.id === id);
-    if (key === "status" && (!t || !canManageTask(t) && t.assignee !== authProfile?.id || value === "Done" && !canMarkTaskDone(t)))
-      return;
-    if (t) {
-      t[key] = value;
-      save();
-    }
   }
   function editMember(id) {
     let m = person(id);
@@ -23696,6 +23752,40 @@ END:VCALENDAR\r
       case "edit-lead":
         editLead(target.dataset.type || "", target.dataset.name || "");
         break;
+      case "open-task":
+        void openTaskDetails(target.dataset.id || "");
+        break;
+      case "toggle-subtasks": {
+        const id = target.dataset.id || "";
+        if (expandedTasks.has(id)) expandedTasks.delete(id);
+        else expandedTasks.add(id);
+        renderTasks();
+        break;
+      }
+      case "divide-task":
+        divideForm(target.dataset.id || "");
+        break;
+      case "edit-task-details":
+        editDetailsForm(target.dataset.id || "");
+        break;
+      case "request-change":
+        requestForm(target.dataset.id || "");
+        break;
+      case "edit-dependencies":
+        dependenciesForm(target.dataset.id || "");
+        break;
+      case "review-request":
+        void reviewRequest(target.dataset.id || "", target.dataset.decision || "");
+        break;
+      case "cancel-request":
+        void cancelRequest(target.dataset.id || "");
+        break;
+      case "open-notification": {
+        document.getElementById("notifPanel")?.classList.add("hidden");
+        void markNotificationsRead([target.dataset.id || ""]);
+        if (target.dataset.task) void openTaskDetails(target.dataset.task);
+        break;
+      }
     }
   });
   document.addEventListener("change", (event) => {
@@ -23804,22 +23894,479 @@ END:VCALENDAR\r
     if (event.persisted) window.location.reload();
   });
   void initializeSupabase();
+  var expandedTasks = /* @__PURE__ */ new Set();
+  var openDetailsId = "";
+  var confirmAction = (message, okLabel = "Confirm") => window.vinesConfirm(message, okLabel);
+  var fmtDay = (day) => (/* @__PURE__ */ new Date(day + "T00:00:00")).toLocaleDateString(void 0, { month: "short", day: "numeric", year: "numeric" });
+  var fmtMoment = (iso) => iso ? new Date(iso).toLocaleString(void 0, { dateStyle: "medium", timeStyle: "short" }) : "";
+  var byDue = (a, b) => (a.due || "9999").localeCompare(b.due || "9999") || a.title.localeCompare(b.title);
+  function subtasksOf(id) {
+    return db.tasks.filter((t) => t.parent === id).sort(byDue);
+  }
+  function progressFor(task) {
+    const kids = subtasksOf(task.id);
+    const counted = db.progress?.[task.id];
+    return progressOf(
+      counted?.total ?? kids.length,
+      counted?.completed ?? kids.filter((k) => k.status === "Completed").length
+    );
+  }
+  function coversTaskMember(task, member) {
+    const c = ruleCtx();
+    return c.isAdmin || c.isExecutive || member.projects.some((p) => taskProjects(task).includes(p) && c.ledProjects.includes(p)) || deptsOf(member).some((d) => taskDepartments(task).includes(d) && c.managedDepartments.includes(d));
+  }
+  function pendingRequestsFor(taskId) {
+    return (db.requests || []).filter((r) => r.task === taskId && r.status === "Pending");
+  }
+  function taskRow(t, isSub = false) {
+    const me = authProfile?.id;
+    const canManageIt = canManageTask(t);
+    const canMarkDone = canMarkTaskDone(t);
+    const canUpdateProgress = Boolean(canManageIt || t.assignee === me);
+    const statusChoices = [...WORKING_STATUSES, ...canMarkDone ? ["Completed"] : []];
+    const canEditStatus = canUpdateProgress && t.assignee && (canMarkDone || t.status !== "Completed");
+    const waiting = unmetDependencies(db.dependencies || [], db.tasks, t.id);
+    const pending = pendingRequestsFor(t.id).length;
+    const kids = isSub ? [] : subtasksOf(t.id);
+    const prog = isSub ? null : progressFor(t);
+    const open = expandedTasks.has(t.id);
+    const ctx = ruleCtx();
+    const chips = [
+      isSub ? '<span class="chip subtle">Subtask</span>' : "",
+      waiting.length ? `<span class="chip warn" title="Waiting on ${esc(waiting.map((w) => w.title).join(", "))}">\u23F3 Waiting on ${waiting.length}</span>` : "",
+      pending ? `<span class="chip">\u2709 ${pending} request${pending === 1 ? "" : "s"}</span>` : "",
+      isOverdue(t) ? '<span class="badge urgent">Overdue</span>' : ""
+    ].join(" ");
+    const caret = kids.length ? `<button type="button" class="caret" data-action="toggle-subtasks" data-id="${t.id}" aria-expanded="${open}" aria-label="${open ? "Hide" : "Show"} subtasks">${open ? "\u25BE" : "\u25B8"}</button>` : "";
+    const bar = prog && prog.total ? `<div class="progress" title="${esc(prog.label)}"><div class="progress-bar"><span style="width:${prog.pct}%"></span></div><small>${esc(prog.label)}</small></div>` : "";
+    return `<div class="task${isSub ? " subtask" : ""}" data-task-row="${t.id}"><div><div class="row-title">${caret}<button type="button" class="task-title-button" data-action="open-task" data-id="${t.id}">${esc(t.title)}</button> ${chips}</div><div class="row-sub">${esc(t.description || "")}${t.assigner ? ` \xB7 assigned by ${esc(personName(t.assigner))}` : ""}</div>${bar}${t.update ? `<div class="progress-update">\u21B3 ${esc(t.update)}</div>` : ""}</div><div class="person"><span class="avatar c2">${initials(personName(t.assignee))}</span><span>${esc(personName(t.assignee))}</span></div><div>${esc(taskScopeLabel(t))}</div><div><span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span></div><div>${t.due ? fmtDay(t.due) : "No deadline"}</div><div>${SHARED_WRITES_ENABLED && canEditStatus ? `<select class="status-select" data-task-status="${t.id}">${options(statusChoices, t.status)}</select>` : badge(t.status)}</div><div>${SHARED_WRITES_ENABLED ? `${canManageIt ? `<button class="btn ghost small" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : ""}${canDivide(ctx, t) ? `<button class="btn ghost small" data-action="divide-task" data-id="${t.id}">\uFF0B Subtask</button>` : ""}<button class="btn ghost small" data-action="add-update" data-id="${t.id}">\uFF0B Update</button>${canDeleteTaskItem(t) ? `<button class="btn danger small" data-action="delete-task" data-id="${t.id}">Delete</button>` : ""}` : ""}</div></div>`;
+  }
+  function renderTasks() {
+    const q = $("taskSearch").value.toLowerCase(), sf = $("taskStatusFilter").value, pf = $("taskProjectFilter").value, df = $("taskDepartmentFilter").value;
+    const matches = (t) => (!q || t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)) && (!sf || t.status === sf) && (!pf || taskProjects(t).includes(pf)) && (!df || taskDepartments(t).includes(df));
+    const filtering = Boolean(q || sf || pf || df);
+    const tops = allowedTasks().filter((t) => !t.parent || !db.tasks.some((p) => p.id === t.parent)).sort(byDue);
+    const rows = [];
+    for (const main of tops) {
+      const kids = subtasksOf(main.id);
+      const shownKids = filtering ? kids.filter(matches) : kids;
+      if (!matches(main) && !shownKids.length) continue;
+      rows.push(taskRow(main, Boolean(main.parent)));
+      if (expandedTasks.has(main.id) || filtering && shownKids.length)
+        shownKids.forEach((kid) => rows.push(taskRow(kid, true)));
+    }
+    $("taskList").innerHTML = `<div class="task header"><span>Task</span><span>Assignee</span><span>Projects / departments</span><span>Priority</span><span>Deadline</span><span>Status</span><span></span></div>` + (rows.length ? rows.join("") : '<div class="empty"><strong>Nothing on the board.</strong>Tasks for your role will show up here.</div>');
+    renderTaskSummary();
+  }
+  function renderTaskSummary() {
+    const me = authProfile?.id;
+    const ctx = ruleCtx();
+    const blocked = db.tasks.filter((t) => t.status === "Blocked").length;
+    const overdue = db.tasks.filter((t) => isOverdue(t)).length;
+    const reviewable = (db.requests || []).filter(
+      (r) => r.status === "Pending" && canReview(ctx, db.tasks.find((t) => t.id === r.task) || { id: "" }) && r.by !== me
+    );
+    const mine = (db.requests || []).filter((r) => r.by === me).slice(0, 8);
+    $("taskSummary").innerHTML = `<span class="chip ${blocked ? "warn" : ""}">\u26D4 ${blocked} blocked</span><span class="chip ${overdue ? "warn" : ""}">\u25F7 ${overdue} overdue</span><span class="chip">\u2709 ${reviewable.length} request${reviewable.length === 1 ? "" : "s"} waiting for you</span>`;
+    const item = (r, review) => {
+      const task = db.tasks.find((t) => t.id === r.task);
+      return `<div class="req-item"><div><strong>${esc(r.type === "Edit" ? "Edit" : "Reassign")}</strong> \xB7 ${esc(task?.title || "Removed subtask")}<div class="row-sub">${esc(describeRequest(r))}${r.reason ? ` \u2014 \u201C${esc(r.reason)}\u201D` : ""}</div><div class="row-sub">${review ? `From ${esc(personName(r.by))}` : `<span class="badge ${r.status === "Approved" ? "done" : r.status === "Rejected" ? "urgent" : "pending"}">${esc(r.status)}</span>`} \xB7 ${esc(fmtMoment(r.at))}</div></div><div class="req-actions"><button class="btn ghost small" data-action="open-task" data-id="${r.task}">Open</button>${review ? `<button class="btn lime small" data-action="review-request" data-id="${r.id}" data-decision="Approve">Approve</button><button class="btn danger small" data-action="review-request" data-id="${r.id}" data-decision="Reject">Reject</button>` : r.status === "Pending" ? `<button class="btn ghost small" data-action="cancel-request" data-id="${r.id}">Cancel</button>` : ""}</div></div>`;
+    };
+    const html = [
+      reviewable.length ? `<h4>Waiting for your decision</h4>${reviewable.map((r) => item(r, true)).join("")}` : "",
+      mine.length ? `<h4>Requests you sent</h4>${mine.map((r) => item(r, false)).join("")}` : ""
+    ].join("");
+    $("taskRequests").innerHTML = html;
+    $("taskRequests").classList.toggle("hidden", !html);
+  }
+  function describeRequest(r) {
+    if (r.type === "Reassign") return `Move it to ${personName(r.changes.assignee_id)}`;
+    const parts = [];
+    if (r.changes.title) parts.push(`title \u2192 \u201C${r.changes.title}\u201D`);
+    if (r.changes.description !== void 0) parts.push("new description");
+    if (r.changes.due_at !== void 0) parts.push(r.changes.due_at ? `deadline \u2192 ${fmtDay(String(r.changes.due_at).slice(0, 10))}` : "remove deadline");
+    if (r.changes.priority) parts.push(`priority \u2192 ${r.changes.priority}`);
+    return parts.join(", ") || "Edit";
+  }
+  function describeActivity(a) {
+    const d = a.detail || {};
+    const who = a.actor_id ? personName(a.actor_id) : "The system";
+    const name = (id) => id ? personName(id) : "nobody";
+    switch (a.event) {
+      case "Task created":
+        return `${who} created the task`;
+      case "Subtask created":
+        return `${who} created this subtask for ${name(d.assignee)}`;
+      case "Task divided":
+        return `${who} added the subtask \u201C${d.title}\u201D for ${name(d.assignee)}`;
+      case "Assigned":
+        return `${who} assigned it to ${name(d.to)}`;
+      case "Reassigned":
+        return `${who} moved it from ${name(d.from)} to ${name(d.to)}`;
+      case "Unassigned":
+        return `${who} removed the assignee`;
+      case "Status changed":
+        return `${who} changed the status from ${d.from} to ${d.to}`;
+      case "Completed":
+        return `${who} marked it completed`;
+      case "Deadline changed":
+        return `${who} changed the deadline${d.to ? ` to ${fmtDay(String(d.to).slice(0, 10))}` : " (removed)"}`;
+      case "Priority changed":
+        return `${who} changed the priority from ${d.from} to ${d.to}`;
+      case "Details edited":
+        return `${who} edited the details`;
+      case "Dependencies changed":
+        return `${who} changed what this waits on`;
+      case "Edit requested":
+        return `${who} asked to edit it${d.reason ? `: \u201C${d.reason}\u201D` : ""}`;
+      case "Reassignment requested":
+        return `${who} asked to reassign it to ${name(d.changes?.assignee_id)}${d.reason ? `: \u201C${d.reason}\u201D` : ""}`;
+      case "Request approved":
+        return `${who} approved the ${String(d.type || "").toLowerCase()} request`;
+      case "Request rejected":
+        return `${who} rejected the ${String(d.type || "").toLowerCase()} request${d.note ? `: \u201C${d.note}\u201D` : ""}`;
+      case "Request cancelled":
+        return `${who} cancelled a request`;
+      case "Comment":
+        return `${who} commented: \u201C${d.text || ""}\u201D`;
+      default:
+        return `${who}: ${a.event}`;
+    }
+  }
+  async function runRpc(name, args) {
+    const { error } = await supabase.rpc(name, args);
+    try {
+      db = await loadSharedWorkspace();
+      render();
+    } catch (e) {
+    }
+    if (error) {
+      alert(error.message);
+      return false;
+    }
+    return true;
+  }
+  async function fetchTaskExtras(id) {
+    const ids = [id, ...subtasksOf(id).map((t) => t.id)];
+    const [comments, activity, requests] = await Promise.all([
+      supabase.from("task_comments").select("id,author_id,body,created_at").eq("task_id", id).order("created_at"),
+      supabase.from("task_activity").select("id,actor_id,event,detail,created_at").eq("task_id", id).order("created_at", { ascending: false }),
+      supabase.from("task_requests").select("id,task_id,request_type,requested_by,changes,reason,status,created_at,reviewed_by,reviewed_at,review_note").in("task_id", ids)
+    ]);
+    if (requests.data) {
+      const fresh = requests.data.map((item) => ({
+        id: item.id,
+        task: item.task_id,
+        type: item.request_type,
+        by: item.requested_by,
+        changes: item.changes || {},
+        reason: item.reason || "",
+        status: item.status,
+        at: item.created_at,
+        reviewedBy: item.reviewed_by || "",
+        reviewedAt: item.reviewed_at || "",
+        note: item.review_note || ""
+      }));
+      db.requests = [...(db.requests || []).filter((r) => !ids.includes(r.task)), ...fresh];
+    }
+    return { comments: comments.data || [], activity: activity.data || [] };
+  }
+  function taskDetailsHtml(t, extras) {
+    const ctx = ruleCtx();
+    const isSub = Boolean(t.parent);
+    const parent = isSub ? db.tasks.find((x) => x.id === t.parent) : null;
+    const kids = subtasksOf(t.id);
+    const prog = isSub ? null : progressFor(t);
+    const ids = [t.id, ...kids.map((k) => k.id)];
+    const requests = (db.requests || []).filter((r) => ids.includes(r.task)).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    const waiting = unmetDependencies(db.dependencies || [], db.tasks, t.id);
+    const dependsOn = (db.dependencies || []).filter((d) => d.task === t.id).map((d) => db.tasks.find((x) => x.id === d.dependsOn)).filter(Boolean);
+    const writes = SHARED_WRITES_ENABLED;
+    const buttons = [
+      writes && canDivide(ctx, t) ? `<button type="button" class="btn lime" data-action="divide-task" data-id="${t.id}">\uFF0B Add subtask</button>` : "",
+      writes && canEditDetails(ctx, t) ? `<button type="button" class="btn ghost" data-action="edit-task-details" data-id="${t.id}">Edit details</button>` : "",
+      writes && canManageTask(t) ? `<button type="button" class="btn ghost" data-action="assign-task" data-id="${t.id}">${t.assignee ? "Reassign" : "Assign"}</button>` : "",
+      writes && canRequestChange(ctx, t) ? `<button type="button" class="btn ghost" data-action="request-change" data-id="${t.id}">Request a change</button>` : "",
+      writes && isSub && canEditDetails(ctx, t) ? `<button type="button" class="btn ghost" data-action="edit-dependencies" data-id="${t.id}">Dependencies</button>` : ""
+    ].join("");
+    const requestHtml = requests.length ? requests.map((r) => {
+      const target = db.tasks.find((x) => x.id === r.task);
+      const reviewable = r.status === "Pending" && target && canReview(ctx, target) && r.by !== authProfile?.id;
+      return `<div class="req-item"><div><strong>${esc(r.type)}</strong>${r.task !== t.id ? ` \xB7 ${esc(target?.title || "")}` : ""} \xB7 <span class="badge ${r.status === "Approved" ? "done" : r.status === "Rejected" ? "urgent" : "pending"}">${esc(r.status)}</span><div class="row-sub">${esc(describeRequest(r))}${r.reason ? ` \u2014 \u201C${esc(r.reason)}\u201D` : ""}</div><div class="row-sub">${esc(personName(r.by))}, ${esc(fmtMoment(r.at))}${r.reviewedBy ? ` \xB7 decided by ${esc(personName(r.reviewedBy))}, ${esc(fmtMoment(r.reviewedAt))}` : ""}</div></div><div class="req-actions">${reviewable ? `<button class="btn lime small" data-action="review-request" data-id="${r.id}" data-decision="Approve">Approve</button><button class="btn danger small" data-action="review-request" data-id="${r.id}" data-decision="Reject">Reject</button>` : ""}${r.status === "Pending" && r.by === authProfile?.id ? `<button class="btn ghost small" data-action="cancel-request" data-id="${r.id}">Cancel</button>` : ""}</div></div>`;
+    }).join("") : '<p class="quiet">No requests.</p>';
+    const subtaskHtml = !isSub ? kids.length ? kids.map((k) => `<div class="sub-line"><button type="button" class="task-title-button" data-action="open-task" data-id="${k.id}">${esc(k.title)}</button> ${badge(k.status)}<span class="quiet">${esc(personName(k.assignee))}${k.due ? ` \xB7 ${esc(fmtDay(k.due))}` : ""}</span>${unmetDependencies(db.dependencies || [], db.tasks, k.id).length ? '<span class="chip warn">\u23F3 waiting</span>' : ""}</div>`).join("") : '<p class="quiet">This task has not been divided. It can be completed directly.</p>' : "";
+    const comments = extras ? extras.comments.length ? extras.comments.map((c) => `<div class="comment"><strong>${esc(personName(c.author_id))}</strong> <span class="quiet">${esc(fmtMoment(c.created_at))}</span><p>${esc(c.body)}</p></div>`).join("") : '<p class="quiet">No comments yet.</p>' : '<p class="quiet">Loading\u2026</p>';
+    const activity = extras ? extras.activity.map((a) => `<li>${esc(describeActivity(a))} <span class="quiet">${esc(fmtMoment(a.created_at))}</span></li>`).join("") || '<li class="quiet">Nothing recorded yet.</li>' : '<li class="quiet">Loading\u2026</li>';
+    return `<div class="cal-detail task-detail" data-detail-task="${t.id}"><div class="cal-detail-badges">${badge(t.status)}<span class="badge ${t.priority === "Urgent" ? "urgent" : t.priority === "High" ? "high" : ""}">${esc(t.priority)}</span>${isOverdue(t) ? '<span class="badge urgent">Overdue</span>' : ""}${isSub ? '<span class="chip subtle">Subtask</span>' : ""}</div>${parent ? `<p class="quiet">Part of <button type="button" class="task-title-button" data-action="open-task" data-id="${parent.id}">${esc(parent.title)}</button></p>` : ""}${waiting.length ? `<div class="note warn-note">\u23F3 Waiting on ${esc(waiting.map((w) => w.title).join(", "))}. Starting it now is possible, but that work is not finished yet.</div>` : ""}<div class="cal-detail-when">\u25F7 Due ${t.due ? esc(fmtDay(t.due)) : "no deadline"}</div><h4>Description</h4><p class="cal-detail-desc">${t.description ? esc(t.description) : '<span class="quiet">No description was added.</span>'}</p><dl class="cal-detail-meta"><div><dt>Assigned to</dt><dd>${t.assignee ? esc(personName(t.assignee)) : "Unassigned"}</dd></div><div><dt>Created by</dt><dd>${t.creator ? esc(personName(t.creator)) : "\u2014"}</dd></div><div><dt>Responsible</dt><dd>${responsible(ctx, t) ? esc(personName(responsible(ctx, t))) : "\u2014"}</dd></div><div><dt>Project / department</dt><dd>${esc(taskScopeLabel(t))}</dd></div></dl>${isSub ? `<h4>Waits for</h4>${dependsOn.length ? dependsOn.map((d) => `<div class="sub-line">${esc(d.title)} ${badge(d.status)}</div>`).join("") : '<p class="quiet">Nothing. It can start any time.</p>'}` : `<h4>Progress</h4>${prog && prog.total ? `<div class="progress"><div class="progress-bar"><span style="width:${prog.pct}%"></span></div><small>${esc(prog.label)}. Completing every subtask does not complete the main task; the responsible person confirms that.</small></div>` : ""}<h4>Subtasks</h4>${subtaskHtml}`}${t.update ? `<h4>Latest update</h4><p class="cal-detail-desc">${esc(t.update)}</p>` : ""}<div class="form-actions detail-actions">${buttons}<button type="button" class="btn ghost" data-close-modal>Close</button></div><h4>Requests</h4>${requestHtml}<h4>Comments</h4><div class="comments">${comments}</div>${writes ? `<form class="comment-form" id="commentForm" data-id="${t.id}"><textarea name="body" rows="2" maxlength="2000" required placeholder="Add a comment, report progress or explain a blocker\u2026"></textarea><button class="btn lime small">Post comment</button></form>` : ""}<h4>Activity</h4><ul class="activity">${activity}</ul></div>`;
+  }
+  async function openTaskDetails(id) {
+    const t = db.tasks.find((x) => x.id === id);
+    if (!t) return;
+    openDetailsId = id;
+    openModal(t.title, taskDetailsHtml(t, null));
+    try {
+      const extras = await fetchTaskExtras(id);
+      if (openDetailsId !== id || !$("modal").classList.contains("open")) return;
+      $("modalBody").innerHTML = taskDetailsHtml(db.tasks.find((x) => x.id === id) || t, extras);
+      wireCommentForm();
+    } catch {
+    }
+  }
+  function wireCommentForm() {
+    const form = document.getElementById("commentForm");
+    if (!form) return;
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const body = String(new FormData(form).get("body") || "").trim();
+      if (!body) return;
+      const { error } = await supabase.from("task_comments").insert([{ task_id: form.dataset.id, author_id: authProfile.id, body }]);
+      if (error) return alert(`Could not post the comment: ${error.message}`);
+      openTaskDetails(form.dataset.id || "");
+    };
+  }
+  function eligibleForSubtask(projectNames, departmentNames) {
+    const c = ruleCtx();
+    const leader = c.isAdmin || c.isExecutive;
+    return db.members.filter((m) => {
+      if (m.status !== "Active") return false;
+      if (!projectNames.length && !departmentNames.length) return leader;
+      const inScope = m.projects.some((p) => projectNames.includes(p)) || deptsOf(m).some((d) => departmentNames.includes(d));
+      const covered = leader || m.projects.some((p) => projectNames.includes(p) && c.ledProjects.includes(p)) || deptsOf(m).some((d) => departmentNames.includes(d) && c.managedDepartments.includes(d));
+      return inScope && covered;
+    });
+  }
+  function divideForm(parentId) {
+    const parent = db.tasks.find((t) => t.id === parentId);
+    const c = ruleCtx();
+    if (!parent || !canDivide(c, parent)) return alert("You cannot divide this task. Only its creator, or a head it was assigned to directly by the President, Vice President or System Admin, can.");
+    const leader = c.isAdmin || c.isExecutive;
+    const parentProjects = taskProjects(parent);
+    const projectChoices = parentProjects.length ? parentProjects : leader ? db.projects.map((p) => p.name) : c.ledProjects;
+    openModal(
+      `Add a subtask to \u201C${parent.title}\u201D`,
+      `<form class="form" id="divideForm"><div class="field full"><label>Subtask</label><input name="title" required placeholder="e.g. Filming"></div><div class="field full"><label>Brief</label><textarea name="description" rows="2" placeholder="What does this piece of work include?"></textarea></div>${projectChoices.length ? `<div class="field full"><label>Projects</label><div class="form-checks">${projectChoices.map((n) => `<label class="check"><input type="checkbox" name="projects" value="${esc(n)}" ${parentProjects.includes(n) ? "checked" : ""}>${esc(n)}</label>`).join("")}</div></div>` : ""}<div class="field full"><label>Departments</label><div class="form-checks">${db.departments.map((d) => `<label class="check"><input type="checkbox" name="departments" value="${esc(d.name)}" ${taskDepartments(parent).includes(d.name) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div><small class="quiet">Department heads can follow subtasks linked to their department.</small></div><div class="field full"><label>Assign to</label><select name="assignee" id="subAssignee" required></select><small class="quiet" id="subAssigneeHint"></small></div><div class="field"><label>Deadline</label><input type="date" name="due"></div><div class="field"><label>Priority</label><select name="priority">${options(PRIORITIES, "Medium")}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Create subtask</button></div></form>`
+    );
+    const form = $("divideForm");
+    const picked = (name) => [...form.querySelectorAll(`[name="${name}"]:checked`)].map((i) => i.value);
+    const refresh = () => {
+      const list = eligibleForSubtask(picked("projects"), picked("departments"));
+      const select = $("subAssignee");
+      const keep = select.value;
+      select.innerHTML = `<option value="">Choose a member</option>${list.map((m) => `<option value="${m.id}" ${m.id === keep ? "selected" : ""}>${esc(m.name)}</option>`).join("")}`;
+      $("subAssigneeHint").textContent = list.length ? "" : "No active member in your scope belongs to the selected projects or departments.";
+    };
+    form.addEventListener("change", refresh);
+    refresh();
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const idsOf = (names, source) => names.map((n) => source.find((x) => x.name === n)?.id).filter(Boolean);
+      const due = String(data.get("due") || "");
+      const ok = await runRpc("create_subtask", {
+        p_parent: parentId,
+        p_title: String(data.get("title") || "").trim(),
+        p_description: String(data.get("description") || "").trim(),
+        p_assignee: String(data.get("assignee") || ""),
+        p_due: due ? `${due}T23:59:00` : null,
+        p_priority: String(data.get("priority") || "Medium"),
+        p_project_ids: idsOf(picked("projects"), db.projects),
+        p_department_ids: idsOf(picked("departments"), db.departments)
+      });
+      if (ok) {
+        expandedTasks.add(parentId);
+        closeModal();
+        render();
+      }
+    };
+  }
+  function editDetailsForm(id) {
+    const t = db.tasks.find((x) => x.id === id);
+    if (!t || !canEditDetails(ruleCtx(), t)) return;
+    openModal(
+      `Edit \u201C${t.title}\u201D`,
+      `<form class="form" id="detailsForm"><div class="field full"><label>Title</label><input name="title" required value="${esc(t.title)}"></div><div class="field full"><label>Description</label><textarea name="description" rows="3">${esc(t.description || "")}</textarea></div><div class="field"><label>Deadline</label><input type="date" name="due" value="${esc(t.due || "")}"></div><div class="field"><label>Priority</label><select name="priority">${options(PRIORITIES, t.priority)}</select></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Save changes</button></div></form>`
+    );
+    $("detailsForm").onsubmit = async (event) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget);
+      const due = String(data.get("due") || "");
+      const ok = await runRpc("update_task_details", {
+        p_task: id,
+        p_title: String(data.get("title") || "").trim(),
+        p_description: String(data.get("description") || ""),
+        p_due: due ? `${due}T23:59:00` : null,
+        p_clear_due: !due && Boolean(t.due),
+        p_priority: String(data.get("priority") || t.priority)
+      });
+      if (ok) openTaskDetails(id);
+    };
+  }
+  function requestForm(id) {
+    const t = db.tasks.find((x) => x.id === id);
+    const c = ruleCtx();
+    if (!t || !canRequestChange(c, t)) return;
+    const mine = db.members.filter((m) => m.status === "Active" && m.id !== t.assignee && deptsOf(m).some((d) => c.managedDepartments.includes(d)));
+    openModal(
+      `Request a change to \u201C${t.title}\u201D`,
+      `<form class="form" id="requestForm"><div class="field full"><label>What do you want?</label><div class="form-checks"><label class="check"><input type="radio" name="type" value="Edit" checked>Edit the subtask</label><label class="check"><input type="radio" name="type" value="Reassign">Give it to someone else</label></div></div><div id="editFields"><div class="field full"><label>Title</label><input name="title" value="${esc(t.title)}"></div><div class="field full"><label>Description</label><textarea name="description" rows="2">${esc(t.description || "")}</textarea></div><div class="field"><label>Deadline</label><input type="date" name="due" value="${esc(t.due || "")}"></div><div class="field"><label>Priority</label><select name="priority">${options(PRIORITIES, t.priority)}</select></div></div><div id="reassignFields" class="field full hidden"><label>New assignee (from your department)</label><select name="assignee"><option value="">Choose a member</option>${mine.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("")}</select></div><div class="field full"><label>Reason</label><textarea name="reason" rows="2" required placeholder="Why should this change?"></textarea></div><div class="note field full">Nothing changes until ${esc(personName(responsible(c, t)) || "the responsible head")} approves it.</div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Send request</button></div></form>`
+    );
+    const form = $("requestForm");
+    const sync = () => {
+      const reassign = form.querySelector('[name="type"]:checked').value === "Reassign";
+      $("editFields").classList.toggle("hidden", reassign);
+      $("reassignFields").classList.toggle("hidden", !reassign);
+    };
+    form.addEventListener("change", sync);
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const type = String(data.get("type"));
+      const changes = {};
+      if (type === "Reassign") {
+        changes.assignee_id = String(data.get("assignee") || "");
+        if (!changes.assignee_id) return alert("Choose the member to give it to.");
+      } else {
+        const title = String(data.get("title") || "").trim();
+        const description = String(data.get("description") || "");
+        const due = String(data.get("due") || "");
+        const priority = String(data.get("priority") || "");
+        if (title && title !== t.title) changes.title = title;
+        if (description !== (t.description || "")) changes.description = description;
+        if (due !== (t.due || "")) changes.due_at = due ? `${due}T23:59:00` : "";
+        if (priority !== t.priority) changes.priority = priority;
+        if (!Object.keys(changes).length) return alert("Change at least one field, or choose reassign.");
+      }
+      const ok = await runRpc("submit_task_request", { p_task: id, p_type: type, p_changes: changes, p_reason: String(data.get("reason") || "").trim() });
+      if (ok) {
+        alert("Your request was sent. Nothing changes until it is approved.");
+        openTaskDetails(id);
+      }
+    };
+  }
+  function dependenciesForm(id) {
+    const t = db.tasks.find((x) => x.id === id);
+    if (!t || !t.parent || !canEditDetails(ruleCtx(), t)) return;
+    const siblings = subtasksOf(t.parent).filter((k) => k.id !== id);
+    const current = (db.dependencies || []).filter((d) => d.task === id).map((d) => d.dependsOn);
+    openModal(
+      `What must finish before \u201C${t.title}\u201D?`,
+      `<form class="form" id="dependencyForm"><div class="field full">${siblings.length ? `<div class="form-checks">${siblings.map((k) => `<label class="check"><input type="checkbox" name="deps" value="${k.id}" ${current.includes(k.id) ? "checked" : ""}>${esc(k.title)} <span class="quiet">(${esc(k.status)})</span></label>`).join("")}</div>` : '<p class="quiet">This main task has no other subtasks yet.</p>'}<small class="quiet">Only subtasks of the same main task. A dependency never creates another level.</small></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Save</button></div></form>`
+    );
+    $("dependencyForm").onsubmit = async (event) => {
+      event.preventDefault();
+      const picked = [...event.currentTarget.querySelectorAll('[name="deps"]:checked')].map((i) => i.value);
+      const ok = await runRpc("set_subtask_dependencies", { p_task: id, p_depends_on: picked });
+      if (ok) openTaskDetails(id);
+    };
+  }
+  async function reviewRequest(id, decision) {
+    const r = (db.requests || []).find((x) => x.id === id);
+    if (!r) return;
+    const task = db.tasks.find((t) => t.id === r.task);
+    const approve = decision === "Approve";
+    const sure = await confirmAction(
+      `${approve ? "Approve" : "Reject"} this ${r.type.toLowerCase()} request on \u201C${task?.title || "this subtask"}\u201D? ${approve ? `It will be applied right away: ${describeRequest(r)}.` : "Nothing will change."} If someone else decides first, theirs counts and yours is ignored.`,
+      approve ? "Approve" : "Reject"
+    );
+    if (!sure) return;
+    const ok = await runRpc("review_task_request", { p_request: id, p_decision: decision, p_note: "" });
+    if (ok && openDetailsId) openTaskDetails(openDetailsId);
+    else if (!ok && openDetailsId && $("modal").classList.contains("open")) openTaskDetails(openDetailsId);
+  }
+  async function cancelRequest(id) {
+    if (!await confirmAction("Cancel this request?", "Cancel request")) return;
+    const ok = await runRpc("cancel_task_request", { p_request: id });
+    if (ok && openDetailsId && $("modal").classList.contains("open")) openTaskDetails(openDetailsId);
+  }
+  async function updateTask(id, key, value) {
+    const t = db.tasks.find((x) => x.id === id);
+    if (key === "status" && (!t || !canManageTask(t) && t.assignee !== authProfile?.id || value === "Completed" && !canMarkTaskDone(t)))
+      return;
+    if (!t) return;
+    if (key === "status") {
+      const waiting = unmetDependencies(db.dependencies || [], db.tasks, t.id);
+      if (waiting.length && ["In Progress", "Under Review", "Completed"].includes(value)) {
+        const go2 = await confirmAction(`\u201C${t.title}\u201D is waiting on ${waiting.map((w) => w.title).join(", ")}. Move it to ${value} anyway?`, "Continue anyway");
+        if (!go2) return render();
+      }
+      if (value === "Completed") {
+        const open = t.parent ? 0 : subtasksOf(t.id).filter((k) => k.status !== "Completed").length;
+        const go2 = await confirmAction(
+          open ? `Confirm \u201C${t.title}\u201D as completed? ${open} subtask${open === 1 ? " is" : "s are"} not completed yet.` : `Confirm \u201C${t.title}\u201D as completed?`,
+          "Mark completed"
+        );
+        if (!go2) return render();
+      }
+    }
+    t[key] = value;
+    save();
+  }
+  function relativeTime(iso) {
+    const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 6e4));
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    if (minutes < 1440) return `${Math.round(minutes / 60)} h ago`;
+    return fmtMoment(iso);
+  }
+  function renderNotifications() {
+    const list = db.notifications || [];
+    const unread = list.filter((n) => !n.read_at).length;
+    const count = document.getElementById("notifCount");
+    if (!count) return;
+    count.textContent = unread > 99 ? "99+" : String(unread);
+    count.classList.toggle("hidden", !unread);
+    $("notifList").innerHTML = list.length ? list.map((n) => `<button type="button" class="notif${n.read_at ? "" : " unread"}" data-action="open-notification" data-id="${n.id}" data-task="${n.task_id || ""}"><strong>${esc(n.title)}</strong>${n.body ? `<span>${esc(n.body)}</span>` : ""}<time>${esc(relativeTime(n.created_at))}</time></button>`).join("") : '<div class="empty"><strong>No notifications yet.</strong>Assignments, requests and deadlines for you appear here.</div>';
+  }
+  async function markNotificationsRead(ids) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
+    (db.notifications || []).forEach((n) => {
+      if (ids.includes(n.id)) n.read_at = n.read_at || stamp;
+    });
+    renderNotifications();
+    if (ids.length) await supabase.from("notifications").update({ read_at: stamp }).in("id", ids);
+  }
+  document.getElementById("notifBtn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    document.getElementById("notifPanel")?.classList.toggle("hidden");
+  });
+  document.addEventListener("click", (event) => {
+    const panel = document.getElementById("notifPanel");
+    if (panel && !panel.classList.contains("hidden") && !event.target.closest("#notifPanel,#notifBtn")) panel.classList.add("hidden");
+  });
+  document.getElementById("notifReadAll")?.addEventListener(
+    "click",
+    () => markNotificationsRead((db.notifications || []).filter((n) => !n.read_at).map((n) => n.id))
+  );
+  setInterval(async () => {
+    const busy = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+    if (document.hidden || busy || !supabase || !authProfile || $("modal").classList.contains("open") || document.getElementById("popup")?.classList.contains("open")) return;
+    try {
+      db = await loadSharedWorkspace();
+      render();
+    } catch {
+    }
+  }, 6e4);
   (() => {
     const queue = [];
     let showing = false;
+    let confirmDone = null;
     const popup = () => document.getElementById("popup");
-    const looksLikeProblem = (text) => /could not|couldn't|not sent|failed|only the|nothing imported|expired|please fix|enter |choose |do not match|cannot|can't|too many|unable|error|not configured|not active|try again/i.test(
+    const looksLikeProblem = (text) => /could not|couldn't|not sent|failed|only the|nothing imported|expired|please fix|enter |choose |do not match|cannot|can't|too many|unable|error|not configured|not active|try again|already|no longer|nothing was changed/i.test(
       text
     );
+    function close() {
+      const box = popup();
+      showing = false;
+      box?.classList.remove("open");
+      box?.setAttribute("aria-hidden", "true");
+      document.getElementById("popupCancel")?.classList.add("hidden");
+      const ok = document.getElementById("popupOk");
+      if (ok) ok.textContent = "OK";
+    }
     function next() {
       const box = popup();
       const message = queue.shift();
-      if (!box || message === void 0) {
-        showing = false;
-        box?.classList.remove("open");
-        box?.setAttribute("aria-hidden", "true");
-        return;
-      }
+      if (!box || message === void 0) return close();
       const problem = looksLikeProblem(message);
       box.classList.toggle("error", problem);
       document.getElementById("popupIcon").textContent = problem ? "!" : "\u2713";
@@ -23829,6 +24376,16 @@ END:VCALENDAR\r
       box.setAttribute("aria-hidden", "false");
       document.getElementById("popupOk")?.focus();
     }
+    function answer(value) {
+      const done = confirmDone;
+      confirmDone = null;
+      close();
+      done?.(value);
+      if (queue.length) {
+        showing = true;
+        next();
+      }
+    }
     window.alert = (message) => {
       queue.push(String(message ?? ""));
       if (!showing) {
@@ -23836,14 +24393,40 @@ END:VCALENDAR\r
         next();
       }
     };
+    window.vinesConfirm = (message, okLabel = "Confirm") => new Promise((resolve) => {
+      const box = popup();
+      if (!box) return resolve(false);
+      confirmDone?.(false);
+      confirmDone = resolve;
+      showing = true;
+      box.classList.remove("error");
+      document.getElementById("popupIcon").textContent = "?";
+      document.getElementById("popupTitle").textContent = "Please confirm";
+      document.getElementById("popupText").textContent = message;
+      document.getElementById("popupCancel")?.classList.remove("hidden");
+      document.getElementById("popupOk").textContent = okLabel;
+      box.classList.add("open");
+      box.setAttribute("aria-hidden", "false");
+      document.getElementById("popupCancel")?.focus();
+    });
     document.addEventListener("DOMContentLoaded", () => {
-      document.getElementById("popupOk")?.addEventListener("click", next);
+      document.getElementById("popupOk")?.addEventListener("click", () => confirmDone ? answer(true) : next());
+      document.getElementById("popupCancel")?.addEventListener("click", () => answer(false));
       popup()?.addEventListener("click", (event) => {
-        if (event.target === popup()) next();
+        if (event.target === popup()) confirmDone ? answer(false) : next();
       });
     });
     document.addEventListener("keydown", (event) => {
-      if (showing && (event.key === "Escape" || event.key === "Enter")) {
+      if (!showing) return;
+      if (confirmDone) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          answer(false);
+        }
+        return;
+      }
+      if (event.key === "Escape" || event.key === "Enter") {
         event.preventDefault();
         event.stopPropagation();
         next();

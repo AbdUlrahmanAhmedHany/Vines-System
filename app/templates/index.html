@@ -213,6 +213,24 @@
             </div>
           </div>
           <div class="controls">
+            <div class="notif-wrap">
+              <button
+                class="btn ghost small notif-btn"
+                id="notifBtn"
+                type="button"
+                aria-label="Notifications"
+                aria-haspopup="true"
+              >
+                🔔<span class="notif-count hidden" id="notifCount">0</span>
+              </button>
+              <div class="notif-panel hidden" id="notifPanel" role="dialog" aria-label="Notifications">
+                <div class="notif-head">
+                  <strong>Notifications</strong>
+                  <button class="btn ghost small" id="notifReadAll" type="button">Mark all read</button>
+                </div>
+                <div id="notifList"></div>
+              </div>
+            </div>
             <button
               class="user-chip"
               id="profileBtn"
@@ -401,16 +419,19 @@
             >
               <option value="">All statuses</option>
               <option>Unassigned</option>
-              <option>Pending</option>
-              <option>In progress</option>
-              <option>In review</option>
-              <option>Done</option></select
+              <option>Not Started</option>
+              <option>In Progress</option>
+              <option>Under Review</option>
+              <option>Blocked</option>
+              <option>Completed</option></select
             ><select class="select" id="taskProjectFilter">
               <option value="">All projects</option></select
             ><select class="select" id="taskDepartmentFilter">
               <option value="">All departments</option>
             </select>
           </div>
+          <div class="task-summary" id="taskSummary"></div>
+          <div class="card task-requests hidden" id="taskRequests"></div>
           <div class="data-table" id="taskList"></div>
         </section>
         <section class="view" id="calendar">
@@ -631,7 +652,10 @@
         <div class="popup-icon" id="popupIcon" aria-hidden="true">✓</div>
         <h2 id="popupTitle">All set</h2>
         <p id="popupText"></p>
-        <button class="btn lime" id="popupOk" type="button">OK</button>
+        <div class="popup-actions">
+          <button class="btn ghost hidden" id="popupCancel" type="button">Cancel</button>
+          <button class="btn lime" id="popupOk" type="button">OK</button>
+        </div>
       </div>
     </div>
     <script defer src="/static/js/app.js"></script>

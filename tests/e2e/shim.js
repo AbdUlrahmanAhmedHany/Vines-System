@@ -47,14 +47,15 @@
     member_departments: [],
     project_assignments: [],
     tasks: [
-      { id: "t1", title: "Record episode 4 intro", description: "Two takes, one with the new mic.", task_type: "Project task", project_id: "p0", department_id: null, assignee_id: "m3", assigned_by: "m2", status: "In progress", priority: "High", due_at: "2026-12-02T23:59:00", progress_update: "Script is locked." },
-      { id: "t2", title: "Design workshop poster", description: "A3 portrait, club colors.", task_type: "Project task", project_id: "p1", department_id: null, assignee_id: "m8", assigned_by: "m1", status: "Pending", priority: "Medium", due_at: "2026-12-09T23:59:00", progress_update: "" },
-      { id: "t3", title: "Cut the Reels teaser", description: "Under 30 seconds.", task_type: "Project task", project_id: "p3", department_id: null, assignee_id: "m4", assigned_by: "m7", status: "In review", priority: "Urgent", due_at: "2026-11-30T23:59:00", progress_update: "" }
+      { id: "t1", title: "Record episode 4 intro", description: "Two takes, one with the new mic.", task_type: "Project task", project_id: "p0", department_id: null, assignee_id: "m3", assigned_by: "m2", status: "In Progress", priority: "High", due_at: "2026-12-02T23:59:00", progress_update: "Script is locked." },
+      { id: "t2", title: "Design workshop poster", description: "A3 portrait, club colors.", task_type: "Project task", project_id: "p1", department_id: null, assignee_id: "m8", assigned_by: "m1", status: "Not Started", priority: "Medium", due_at: "2026-12-09T23:59:00", progress_update: "" },
+      { id: "t3", title: "Cut the Reels teaser", description: "Under 30 seconds.", task_type: "Project task", project_id: "p3", department_id: null, assignee_id: "m4", assigned_by: "m7", status: "Under Review", priority: "Urgent", due_at: "2026-11-30T23:59:00", progress_update: "" }
     ],
     task_projects: [
       { task_id: "t1", project_id: "p0" }, { task_id: "t2", project_id: "p1" }, { task_id: "t3", project_id: "p3" }
     ],
     task_departments: [], task_updates: [], member_positions: [], member_contacts: [], pending_plans: [],
+    task_requests: [], task_dependencies: [], task_comments: [], task_activity: [], notifications: [],
     positions: [
       { id: "pos1", name: "President" }, { id: "pos2", name: "Vice President" },
       { id: "pos3", name: "Department Head" }, { id: "pos4", name: "Project Head" }
@@ -68,6 +69,9 @@
       DATA.project_assignments.push({ member_id: m, project_id: p, status: "Active", role_on_project: "" });
     });
   });
+
+  window.__DATA = DATA;
+  if (window.__SEED) window.__SEED(DATA);
 
   // Sign-in session. Falls back to an in-memory store if browser storage is blocked.
   try {
@@ -92,6 +96,54 @@
     return new Response(status === 204 ? null : text, {
       status: status || 200, headers: { "Content-Type": "application/json" }
     });
+  }
+
+  // Stand-ins for the database functions behind the task system. The real rules are tested against
+  // PostgreSQL; here they only need to behave plausibly so the screens can be driven.
+  function rpc(name, a) {
+    window.__calls = window.__calls || [];
+    window.__calls.push(["rpc", name, a]);
+    if (window.__RPC_FAIL && window.__RPC_FAIL[name]) return reply({ message: window.__RPC_FAIL[name] }, 400);
+    var task = function (id) { return DATA.tasks.filter(function (t) { return t.id === id; })[0]; };
+    if (name === "get_task_progress") {
+      return reply((a.p_task_ids || []).map(function (id) {
+        var kids = DATA.tasks.filter(function (t) { return t.parent_task_id === id; });
+        return { task_id: id, total: kids.length, completed: kids.filter(function (k) { return k.status === "Completed"; }).length, blocked: kids.filter(function (k) { return k.status === "Blocked"; }).length };
+      }));
+    }
+    if (name === "create_subtask") {
+      var id = "s" + DATA.tasks.length + "x";
+      DATA.tasks.push({ id: id, title: a.p_title, description: a.p_description, task_type: "Project task", project_id: (a.p_project_ids || [])[0] || null, department_id: null, assignee_id: a.p_assignee, assigned_by: USER.id, created_by: USER.id, parent_task_id: a.p_parent, status: "Not Started", priority: a.p_priority, due_at: a.p_due, progress_update: "" });
+      (a.p_project_ids || []).forEach(function (p) { DATA.task_projects.push({ task_id: id, project_id: p }); });
+      (a.p_department_ids || []).forEach(function (d) { DATA.task_departments.push({ task_id: id, department_id: d }); });
+      return reply(id);
+    }
+    if (name === "submit_task_request") {
+      DATA.task_requests.push({ id: "r" + DATA.task_requests.length, task_id: a.p_task, request_type: a.p_type, requested_by: USER.id, changes: a.p_changes, reason: a.p_reason, status: "Pending", created_at: new Date().toISOString(), reviewed_by: null, reviewed_at: null, review_note: "" });
+      return reply("ok");
+    }
+    if (name === "review_task_request" || name === "cancel_task_request") {
+      var r = DATA.task_requests.filter(function (x) { return x.id === a.p_request; })[0];
+      if (!r || r.status !== "Pending") return reply({ message: "This request was already " + (r ? r.status.toLowerCase() : "removed") + " by Someone Else. Nothing was changed." }, 400);
+      if (name === "cancel_task_request") { r.status = "Cancelled"; return reply(null, 204); }
+      r.status = a.p_decision === "Approve" ? "Approved" : "Rejected"; r.reviewed_by = USER.id; r.reviewed_at = new Date().toISOString();
+      if (a.p_decision === "Approve") {
+        var t = task(r.task_id);
+        if (r.request_type === "Reassign") t.assignee_id = r.changes.assignee_id; else { if (r.changes.title) t.title = r.changes.title; if (r.changes.priority) t.priority = r.changes.priority; }
+      }
+      return reply(null, 204);
+    }
+    if (name === "update_task_details") {
+      var u = task(a.p_task); u.title = a.p_title || u.title; u.priority = a.p_priority || u.priority; u.description = a.p_description;
+      u.due_at = a.p_clear_due ? null : (a.p_due || u.due_at);
+      return reply(null, 204);
+    }
+    if (name === "set_subtask_dependencies") {
+      DATA.task_dependencies = DATA.task_dependencies.filter(function (d) { return d.task_id !== a.p_task; });
+      (a.p_depends_on || []).forEach(function (d) { DATA.task_dependencies.push({ task_id: a.p_task, depends_on_task_id: d }); });
+      return reply(null, 204);
+    }
+    return reply(null, 204);
   }
 
   var RESERVED = { select: 1, order: 1, limit: 1, offset: 1, on_conflict: 1, columns: 1 };
@@ -207,6 +259,8 @@
         window.__calls.push(["storage", method, url.pathname]);
         return Promise.resolve(reply({ Key: "avatars/x" }));
       }
+      var rpcm = url.pathname.match(/^\/rest\/v1\/rpc\/(\w+)/);
+      if (rpcm) return Promise.resolve(rpc(rpcm[1], JSON.parse((init && init.body) || "{}")));
       var m = url.pathname.match(/^\/rest\/v1\/(\w+)/);
       if (m) return Promise.resolve(rest(m[1], method, url, init));
       return Promise.resolve(reply([]));

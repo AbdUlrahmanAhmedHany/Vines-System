@@ -1,4 +1,4 @@
-from conftest import PRESIDENT
+from conftest import PRESIDENT, until
 
 
 def go(page, view):
@@ -29,7 +29,7 @@ def test_president_creates_a_club_wide_task(open_app):
     page.fill("#taskForm input[name=title]", "Club meeting prep")
     page.check("#clubWideTask")
     page.click("#taskForm .btn.lime")
-    page.wait_for_function("document.querySelector('#taskList').innerText.includes('Club meeting prep')")
+    until(page, "document.querySelector('#taskList').innerText.includes('Club meeting prep')")
     assert "Club-wide" in page.inner_text("#taskList")
     assert page.native_dialogs == []
 
