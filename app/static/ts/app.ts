@@ -855,6 +855,7 @@ async function openWorkspace(user: any) {
     return;
   }
   sessionReady = true;
+  startLiveUpdates();
   syncedDb = structuredClone(db);
   openingSessionFor = "";
   paintChip();
@@ -2993,15 +2994,31 @@ function assignTask(id) {
 function addUpdate(id) {
   let t = db.tasks.find((t) => t.id === id);
   if (!t) return;
+  const canChangeDeadline = SHARED_WRITES_ENABLED && canEditDetails(ruleCtx(), t) && t.status !== "Completed";
   openModal(
     "Share a progress update",
-    `<form class="form" id="updateForm"><div class="field full"><label>What changed or what do you need?</label><textarea name="update" rows="4" required placeholder="Add a short note for the team…">${esc(t.update || "")}</textarea></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Save update</button></div></form>`,
+    `<form class="form" id="updateForm"><div class="field full"><label>What changed or what do you need?</label><textarea name="update" rows="4" required placeholder="Add a short note for the team…">${esc(t.update || "")}</textarea></div>${canChangeDeadline ? `<div class="field"><label>Deadline</label><input type="date" name="due" value="${esc(t.due || "")}"></div><div class="note field full">Leave the deadline as it is, or pick a new date. People on the task are notified of a change.</div>` : ""}<div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Save update</button></div></form>`,
   );
-  $("updateForm").onsubmit = (e) => {
+  $("updateForm").onsubmit = async (e) => {
     e.preventDefault();
-    let value = String(
-      new FormData(e.target as HTMLFormElement).get("update") || "",
-    ).trim();
+    const form = new FormData(e.target as HTMLFormElement);
+    let value = String(form.get("update") || "").trim();
+    if (canChangeDeadline) {
+      const due = String(form.get("due") || "");
+      if (due !== (t.due || "")) {
+        // Deadlines are changed by the database function, which re-checks who may do it.
+        const ok = await runRpc("update_task_details", {
+          p_task: id,
+          p_title: null,
+          p_description: null,
+          p_due: due ? `${due}T23:59:00` : null,
+          p_clear_due: !due,
+          p_priority: null,
+        });
+        if (!ok) return;
+        t = db.tasks.find((x) => x.id === id) || t;
+      }
+    }
     t.update = value;
     t.updates = [
       ...(t.updates || []),
@@ -4052,17 +4069,80 @@ document.getElementById("notifReadAll")?.addEventListener("click", () =>
   markNotificationsRead((db.notifications || []).filter((n: any) => !n.read_at).map((n: any) => n.id)),
 );
 
-// The site has no live push, so quietly refresh every minute while nothing is being typed.
-setInterval(async () => {
-  const busy = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-  if (document.hidden || busy || !supabase || !authProfile || $("modal").classList.contains("open") || document.getElementById("popup")?.classList.contains("open")) return;
+// Live updates. The database tells the page when something changed (Supabase Realtime), and the
+// page then reloads what this person is allowed to see. Row-level security still decides what
+// arrives, so the signal reveals nothing. A short poll and a refresh on returning to the tab cover
+// the cases where the live connection is down. Nothing refreshes while a form is open or being typed
+// in; it catches up as soon as that is over.
+let liveRefreshTimer: number | undefined;
+let liveRefreshing = false;
+let livePending = false;
+function liveBusy() {
+  const el = document.activeElement;
+  const typing = el && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+  return Boolean(
+    document.hidden || typing || $("modal").classList.contains("open") || document.getElementById("popup")?.classList.contains("open"),
+  );
+}
+async function liveRefresh() {
+  if (!supabase || !authProfile || liveRefreshing) return;
+  if (liveBusy()) {
+    livePending = true;
+    return;
+  }
+  liveRefreshing = true;
+  livePending = false;
   try {
     db = await loadSharedWorkspace();
     render();
   } catch {
-    /* try again next minute */
+    /* try again on the next signal */
+  } finally {
+    liveRefreshing = false;
   }
-}, 60000);
+}
+function scheduleLiveRefresh() {
+  window.clearTimeout(liveRefreshTimer);
+  liveRefreshTimer = window.setTimeout(liveRefresh, 600);
+}
+const LIVE_TABLES = [
+  "members",
+  "departments",
+  "projects",
+  "member_departments",
+  "member_positions",
+  "project_assignments",
+  "tasks",
+  "task_projects",
+  "task_departments",
+  "task_dependencies",
+  "task_requests",
+  "task_comments",
+  "notifications",
+];
+let liveChannelFor = "";
+function startLiveUpdates() {
+  if (!supabase || !authProfile || liveChannelFor === authProfile.id || typeof supabase.channel !== "function") return;
+  liveChannelFor = authProfile.id;
+  try {
+    let channel = supabase.channel(`vines-live-${authProfile.id}`);
+    for (const table of LIVE_TABLES) channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, scheduleLiveRefresh);
+    channel.subscribe();
+  } catch {
+    /* the poll below still keeps the page current */
+  }
+}
+setInterval(() => {
+  startLiveUpdates();
+  void liveRefresh();
+}, 20000);
+setInterval(() => {
+  if (livePending) void liveRefresh();
+}, 2000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) void liveRefresh();
+});
+window.addEventListener("focus", () => void liveRefresh());
 
 // Site messages. Every alert() in the app shows this centred, on-theme popup instead of the
 // browser's "<site> says…" box. Messages queue so none is lost. vinesConfirm() is the same popup

@@ -281,6 +281,8 @@ def create_app() -> Flask:
         parsed = urlparse(worker_setting("SUPABASE_URL").strip())
         if parsed.scheme in ("http", "https") and parsed.netloc:
             connect.append(f"{parsed.scheme}://{parsed.netloc}")
+            # Live updates arrive over a websocket to the same host.
+            connect.append(f"{'wss' if parsed.scheme == 'https' else 'ws'}://{parsed.netloc}")
             # Profile photos are served from the project's public storage bucket.
             images.append(f"{parsed.scheme}://{parsed.netloc}")
         policy = "; ".join(
