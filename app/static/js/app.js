@@ -21715,6 +21715,7 @@ ${suffix}`;
       return;
     }
     sessionReady = true;
+    startLiveUpdates();
     syncedDb = structuredClone(db);
     openingSessionFor = "";
     paintChip();
@@ -23427,15 +23428,30 @@ END:VCALENDAR\r
   function addUpdate(id) {
     let t = db.tasks.find((t2) => t2.id === id);
     if (!t) return;
+    const canChangeDeadline = SHARED_WRITES_ENABLED && canEditDetails(ruleCtx(), t) && t.status !== "Completed";
     openModal(
       "Share a progress update",
-      `<form class="form" id="updateForm"><div class="field full"><label>What changed or what do you need?</label><textarea name="update" rows="4" required placeholder="Add a short note for the team\u2026">${esc(t.update || "")}</textarea></div><div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Save update</button></div></form>`
+      `<form class="form" id="updateForm"><div class="field full"><label>What changed or what do you need?</label><textarea name="update" rows="4" required placeholder="Add a short note for the team\u2026">${esc(t.update || "")}</textarea></div>${canChangeDeadline ? `<div class="field"><label>Deadline</label><input type="date" name="due" value="${esc(t.due || "")}"></div><div class="note field full">Leave the deadline as it is, or pick a new date. People on the task are notified of a change.</div>` : ""}<div class="form-actions"><button type="button" class="btn ghost" data-close-modal>Cancel</button><button class="btn lime">Save update</button></div></form>`
     );
-    $("updateForm").onsubmit = (e) => {
+    $("updateForm").onsubmit = async (e) => {
       e.preventDefault();
-      let value = String(
-        new FormData(e.target).get("update") || ""
-      ).trim();
+      const form = new FormData(e.target);
+      let value = String(form.get("update") || "").trim();
+      if (canChangeDeadline) {
+        const due = String(form.get("due") || "");
+        if (due !== (t.due || "")) {
+          const ok = await runRpc("update_task_details", {
+            p_task: id,
+            p_title: null,
+            p_description: null,
+            p_due: due ? `${due}T23:59:00` : null,
+            p_clear_due: !due,
+            p_priority: null
+          });
+          if (!ok) return;
+          t = db.tasks.find((x) => x.id === id) || t;
+        }
+      }
       t.update = value;
       t.updates = [
         ...t.updates || [],
@@ -24337,15 +24353,73 @@ END:VCALENDAR\r
     "click",
     () => markNotificationsRead((db.notifications || []).filter((n) => !n.read_at).map((n) => n.id))
   );
-  setInterval(async () => {
-    const busy = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-    if (document.hidden || busy || !supabase || !authProfile || $("modal").classList.contains("open") || document.getElementById("popup")?.classList.contains("open")) return;
+  var liveRefreshTimer;
+  var liveRefreshing = false;
+  var livePending = false;
+  function liveBusy() {
+    const el = document.activeElement;
+    const typing = el && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+    return Boolean(
+      document.hidden || typing || $("modal").classList.contains("open") || document.getElementById("popup")?.classList.contains("open")
+    );
+  }
+  async function liveRefresh() {
+    if (!supabase || !authProfile || liveRefreshing) return;
+    if (liveBusy()) {
+      livePending = true;
+      return;
+    }
+    liveRefreshing = true;
+    livePending = false;
     try {
       db = await loadSharedWorkspace();
       render();
     } catch {
+    } finally {
+      liveRefreshing = false;
     }
-  }, 6e4);
+  }
+  function scheduleLiveRefresh() {
+    window.clearTimeout(liveRefreshTimer);
+    liveRefreshTimer = window.setTimeout(liveRefresh, 600);
+  }
+  var LIVE_TABLES = [
+    "members",
+    "departments",
+    "projects",
+    "member_departments",
+    "member_positions",
+    "project_assignments",
+    "tasks",
+    "task_projects",
+    "task_departments",
+    "task_dependencies",
+    "task_requests",
+    "task_comments",
+    "notifications"
+  ];
+  var liveChannelFor = "";
+  function startLiveUpdates() {
+    if (!supabase || !authProfile || liveChannelFor === authProfile.id || typeof supabase.channel !== "function") return;
+    liveChannelFor = authProfile.id;
+    try {
+      let channel = supabase.channel(`vines-live-${authProfile.id}`);
+      for (const table of LIVE_TABLES) channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, scheduleLiveRefresh);
+      channel.subscribe();
+    } catch {
+    }
+  }
+  setInterval(() => {
+    startLiveUpdates();
+    void liveRefresh();
+  }, 2e4);
+  setInterval(() => {
+    if (livePending) void liveRefresh();
+  }, 2e3);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void liveRefresh();
+  });
+  window.addEventListener("focus", () => void liveRefresh());
   (() => {
     const queue = [];
     let showing = false;
